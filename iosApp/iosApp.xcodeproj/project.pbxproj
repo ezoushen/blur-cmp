@@ -73,8 +73,12 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 1630;
+				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					78B53CC79860CBFC2F5543C6 = {
+						DevelopmentTeam = 6RTPJGVKB3;
+						ProvisioningStyle = Automatic;
+					};
 				};
 			};
 			buildConfigurationList = FF7CA1CA754D017066F1822F /* Build configuration list for PBXProject "iosApp" */;
@@ -257,9 +261,13 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 6RTPJGVKB3;
 				FRAMEWORK_SEARCH_PATHS = (
-					"$(SRCROOT)/../demoApp/build/bin/iosSimulatorArm64/debugFramework",
+					"$(SRCROOT)/../demoApp/build/bin/iosArm64/debugFramework",
 					"$(SRCROOT)/../demoApp/build/bin/iosArm64/releaseFramework",
+					"$(SRCROOT)/../demoApp/build/bin/iosSimulatorArm64/debugFramework",
+					"$(SRCROOT)/../demoApp/build/bin/iosSimulatorArm64/releaseFramework",
 					"$(inherited)",
 				);
 				INFOPLIST_FILE = iosApp/Info.plist;
@@ -283,9 +291,13 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 6RTPJGVKB3;
 				FRAMEWORK_SEARCH_PATHS = (
-					"$(SRCROOT)/../demoApp/build/bin/iosSimulatorArm64/debugFramework",
+					"$(SRCROOT)/../demoApp/build/bin/iosArm64/debugFramework",
 					"$(SRCROOT)/../demoApp/build/bin/iosArm64/releaseFramework",
+					"$(SRCROOT)/../demoApp/build/bin/iosSimulatorArm64/debugFramework",
+					"$(SRCROOT)/../demoApp/build/bin/iosSimulatorArm64/releaseFramework",
 					"$(inherited)",
 				);
 				INFOPLIST_FILE = iosApp/Info.plist;
