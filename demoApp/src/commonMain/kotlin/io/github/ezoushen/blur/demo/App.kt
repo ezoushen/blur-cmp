@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
@@ -27,18 +26,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import io.github.ezoushen.blur.cmp.BlurBlendMode
-import io.github.ezoushen.blur.cmp.BlurGradientType
-import io.github.ezoushen.blur.cmp.BlurOverlayConfig
-import io.github.ezoushen.blur.cmp.BlurOverlayHost
-import io.github.ezoushen.blur.cmp.rememberBlurOverlayState
-import io.github.ezoushen.blur.cmp.withTint
+import dev.chrisbanes.haze.HazeProgressive
+import dev.chrisbanes.haze.HazeTint
+import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.hazeSource
+import dev.chrisbanes.haze.rememberHazeState
 
 /** Simple float formatting without String.format (not available in commonMain). */
 private fun Float.fmt(): String {
@@ -56,27 +55,39 @@ private val textWhite = TextStyle(color = Color.White, fontSize = 14.sp)
 private val textWhiteBold = TextStyle(color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
 private val textTitle = TextStyle(color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
 
+private enum class BlurBlendModeOption(val label: String, val blendMode: BlendMode) {
+    Normal("Normal", BlendMode.SrcOver),
+    ColorDodge("ColorDodge", BlendMode.ColorDodge),
+    Multiply("Multiply", BlendMode.Multiply),
+    Screen("Screen", BlendMode.Screen),
+    Overlay("Overlay", BlendMode.Overlay),
+}
+
 @Composable
 fun BlurCmpDemoApp() {
     var mode by remember { mutableStateOf(DemoMode.Uniform) }
+    val hazeState = rememberHazeState()
 
-    // The animated background is drawn first (behind) in the Box.
-    // BlurOverlayHost blurs what's behind it in the view hierarchy.
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         // Background layer — this is what gets blurred
-        AnimatedBackground()
+        AnimatedBackground(
+            modifier = Modifier.fillMaxSize().hazeSource(state = hazeState),
+        )
 
         // Blur overlay + controls on top
         when (mode) {
             DemoMode.Uniform -> UniformBlurDemo(
+                hazeState = hazeState,
                 selectedMode = mode,
                 onModeChange = { mode = it },
             )
             DemoMode.Variable -> VariableBlurDemo(
+                hazeState = hazeState,
                 selectedMode = mode,
                 onModeChange = { mode = it },
             )
             DemoMode.ColorDodge -> ColorDodgeDemo(
+                hazeState = hazeState,
                 selectedMode = mode,
                 onModeChange = { mode = it },
             )
@@ -215,32 +226,37 @@ private fun ToggleRow(label: String, checked: Boolean, onToggle: (Boolean) -> Un
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun UniformBlurDemo(selectedMode: DemoMode, onModeChange: (DemoMode) -> Unit) {
+private fun UniformBlurDemo(
+    hazeState: dev.chrisbanes.haze.HazeState,
+    selectedMode: DemoMode,
+    onModeChange: (DemoMode) -> Unit,
+) {
     var radius by remember { mutableStateOf(25f) }
     var tintAlpha by remember { mutableStateOf(0.15f) }
-    var blendMode by remember { mutableStateOf(BlurBlendMode.ColorDodge) }
-    var enabled by remember { mutableStateOf(true) }
+    var blendModeOption by remember { mutableStateOf(BlurBlendModeOption.ColorDodge) }
 
-    val state = rememberBlurOverlayState(
-        initialConfig = BlurOverlayConfig(
-            radius = radius,
-            tintBlendMode = blendMode,
-        ).withTint(Color.White.copy(alpha = tintAlpha))
-    )
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Blur overlay
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .hazeEffect(state = hazeState) {
+                    blurRadius = radius.dp
+                    tints = listOf(
+                        HazeTint(
+                            color = Color.White.copy(alpha = tintAlpha),
+                            blendMode = blendModeOption.blendMode,
+                        ),
+                    )
+                },
+        )
 
-    // Keep state in sync with slider changes
-    state.config = BlurOverlayConfig(
-        radius = radius,
-        tintBlendMode = blendMode,
-    ).withTint(Color.White.copy(alpha = tintAlpha))
-    state.isEnabled = enabled
-
-    BlurOverlayHost(state = state) {
+        // Controls on top of blur
         Column(modifier = Modifier.fillMaxSize()) {
             Spacer(Modifier.height(48.dp))
             ModeChips(selected = selectedMode, onSelect = onModeChange)
 
-            // Content area (blur overlay blurs the AnimatedBackground behind)
+            // Content area
             Box(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 contentAlignment = Alignment.Center,
@@ -248,7 +264,7 @@ private fun UniformBlurDemo(selectedMode: DemoMode, onModeChange: (DemoMode) -> 
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     BasicText("Uniform Blur", style = textTitle)
                     Spacer(Modifier.height(8.dp))
-                    BasicText("Blend: ${blendMode.name}", style = textWhite)
+                    BasicText("Blend: ${blendModeOption.label}", style = textWhite)
                 }
             }
 
@@ -269,22 +285,14 @@ private fun UniformBlurDemo(selectedMode: DemoMode, onModeChange: (DemoMode) -> 
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    listOf(
-                        BlurBlendMode.Normal,
-                        BlurBlendMode.ColorDodge,
-                        BlurBlendMode.Multiply,
-                        BlurBlendMode.Screen,
-                        BlurBlendMode.Overlay,
-                    ).forEach { mode ->
+                    BlurBlendModeOption.entries.forEach { option ->
                         Chip(
-                            label = mode.name,
-                            isSelected = blendMode == mode,
-                            onClick = { blendMode = mode },
+                            label = option.label,
+                            isSelected = blendModeOption == option,
+                            onClick = { blendModeOption = option },
                         )
                     }
                 }
-                Spacer(Modifier.height(8.dp))
-                ToggleRow("Enabled", enabled) { enabled = it }
                 Spacer(Modifier.height(16.dp))
             }
         }
@@ -293,37 +301,31 @@ private fun UniformBlurDemo(selectedMode: DemoMode, onModeChange: (DemoMode) -> 
 
 // ── Mode 2: Variable Blur ───────────────────────────────────────────────
 
-private enum class VariableStyle(val label: String) {
-    Vertical("Vertical"),
-    Spotlight("Spotlight"),
-}
-
 @Composable
-private fun VariableBlurDemo(selectedMode: DemoMode, onModeChange: (DemoMode) -> Unit) {
-    var style by remember { mutableStateOf(VariableStyle.Vertical) }
+private fun VariableBlurDemo(
+    hazeState: dev.chrisbanes.haze.HazeState,
+    selectedMode: DemoMode,
+    onModeChange: (DemoMode) -> Unit,
+) {
     var radius by remember { mutableStateOf(30f) }
     var startIntensity by remember { mutableStateOf(1f) }
     var endIntensity by remember { mutableStateOf(0f) }
 
-    val gradient = when (style) {
-        VariableStyle.Vertical -> BlurGradientType.verticalTopToBottom(
-            startIntensity = startIntensity,
-            endIntensity = endIntensity,
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Blur overlay with progressive vertical gradient
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .hazeEffect(state = hazeState) {
+                    blurRadius = radius.dp
+                    progressive = HazeProgressive.verticalGradient(
+                        startIntensity = startIntensity,
+                        endIntensity = endIntensity,
+                    )
+                },
         )
-        VariableStyle.Spotlight -> BlurGradientType.spotlight(
-            centerX = 0.5f,
-            centerY = 0.5f,
-            radius = 0.4f,
-        )
-    }
 
-    val state = rememberBlurOverlayState(
-        initialConfig = BlurOverlayConfig(radius = radius, gradient = gradient)
-    )
-
-    state.config = BlurOverlayConfig(radius = radius, gradient = gradient)
-
-    BlurOverlayHost(state = state) {
+        // Controls on top of blur
         Column(modifier = Modifier.fillMaxSize()) {
             Spacer(Modifier.height(48.dp))
             ModeChips(selected = selectedMode, onSelect = onModeChange)
@@ -336,7 +338,7 @@ private fun VariableBlurDemo(selectedMode: DemoMode, onModeChange: (DemoMode) ->
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     BasicText("Variable Blur", style = textTitle)
                     Spacer(Modifier.height(8.dp))
-                    BasicText("Style: ${style.label}", style = textWhite)
+                    BasicText("Vertical Gradient", style = textWhite)
                 }
             }
 
@@ -347,19 +349,9 @@ private fun VariableBlurDemo(selectedMode: DemoMode, onModeChange: (DemoMode) ->
                     .background(Color.Black.copy(alpha = 0.6f))
                     .padding(vertical = 8.dp),
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    VariableStyle.entries.forEach { s ->
-                        Chip(label = s.label, isSelected = style == s, onClick = { style = s })
-                    }
-                }
                 LabeledSlider("Radius", radius, { radius = it }, 0f..80f)
-                if (style == VariableStyle.Vertical) {
-                    LabeledSlider("Start Intensity", startIntensity, { startIntensity = it }, 0f..1f)
-                    LabeledSlider("End Intensity", endIntensity, { endIntensity = it }, 0f..1f)
-                }
+                LabeledSlider("Start Intensity", startIntensity, { startIntensity = it }, 0f..1f)
+                LabeledSlider("End Intensity", endIntensity, { endIntensity = it }, 0f..1f)
                 Spacer(Modifier.height(16.dp))
             }
         }
@@ -369,26 +361,34 @@ private fun VariableBlurDemo(selectedMode: DemoMode, onModeChange: (DemoMode) ->
 // ── Mode 3: Color Dodge Showcase ────────────────────────────────────────
 
 @Composable
-private fun ColorDodgeDemo(selectedMode: DemoMode, onModeChange: (DemoMode) -> Unit) {
+private fun ColorDodgeDemo(
+    hazeState: dev.chrisbanes.haze.HazeState,
+    selectedMode: DemoMode,
+    onModeChange: (DemoMode) -> Unit,
+) {
     var radius by remember { mutableStateOf(20f) }
     var tintAlpha by remember { mutableStateOf(0.2f) }
     var useDodge by remember { mutableStateOf(true) }
 
-    val blendMode = if (useDodge) BlurBlendMode.ColorDodge else BlurBlendMode.Normal
+    val blendMode = if (useDodge) BlendMode.ColorDodge else BlendMode.SrcOver
 
-    val state = rememberBlurOverlayState(
-        initialConfig = BlurOverlayConfig(
-            radius = radius,
-            tintBlendMode = blendMode,
-        ).withTint(Color.White.copy(alpha = tintAlpha))
-    )
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Blur overlay
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .hazeEffect(state = hazeState) {
+                    blurRadius = radius.dp
+                    tints = listOf(
+                        HazeTint(
+                            color = Color.White.copy(alpha = tintAlpha),
+                            blendMode = blendMode,
+                        ),
+                    )
+                },
+        )
 
-    state.config = BlurOverlayConfig(
-        radius = radius,
-        tintBlendMode = blendMode,
-    ).withTint(Color.White.copy(alpha = tintAlpha))
-
-    BlurOverlayHost(state = state) {
+        // Controls on top of blur
         Column(modifier = Modifier.fillMaxSize()) {
             Spacer(Modifier.height(48.dp))
             ModeChips(selected = selectedMode, onSelect = onModeChange)

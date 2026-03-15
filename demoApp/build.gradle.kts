@@ -31,6 +31,7 @@ kotlin {
             implementation(compose.foundation)
             implementation(compose.ui)
             implementation(project(":blur-cmp"))
+            implementation(libs.haze)
         }
         androidMain.dependencies {
             implementation(libs.androidx.activity.compose)
