@@ -60,7 +60,15 @@ private val textTitle = TextStyle(color = Color.White, fontSize = 20.sp, fontWei
 fun BlurCmpDemoApp() {
     var mode by remember { mutableStateOf(DemoMode.Uniform) }
 
+    // The animated background MUST be outside BlurOverlayHost.
+    // BlurOverlayHost blurs what's BEHIND it in the window hierarchy.
+    // The background is drawn at the Activity/UIWindow level, and the
+    // blur overlay captures and blurs it.
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        // Background layer — this is what gets blurred
+        AnimatedBackground()
+
+        // Blur overlay + controls on top
         when (mode) {
             DemoMode.Uniform -> UniformBlurDemo(
                 selectedMode = mode,
@@ -234,12 +242,11 @@ private fun UniformBlurDemo(selectedMode: DemoMode, onModeChange: (DemoMode) -> 
             Spacer(Modifier.height(48.dp))
             ModeChips(selected = selectedMode, onSelect = onModeChange)
 
-            // Content area
+            // Content area (blur overlay blurs the AnimatedBackground behind)
             Box(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 contentAlignment = Alignment.Center,
             ) {
-                AnimatedBackground()
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     BasicText("Uniform Blur", style = textTitle)
                     Spacer(Modifier.height(8.dp))
@@ -328,7 +335,6 @@ private fun VariableBlurDemo(selectedMode: DemoMode, onModeChange: (DemoMode) ->
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 contentAlignment = Alignment.Center,
             ) {
-                AnimatedBackground()
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     BasicText("Variable Blur", style = textTitle)
                     Spacer(Modifier.height(8.dp))
@@ -394,7 +400,6 @@ private fun ColorDodgeDemo(selectedMode: DemoMode, onModeChange: (DemoMode) -> U
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 contentAlignment = Alignment.Center,
             ) {
-                AnimatedBackground()
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.padding(horizontal = 32.dp),
