@@ -136,9 +136,11 @@ tasks.register("runAndroid") {
     dependsOn("installDebug")
 
     doLast {
+        val sdkDir = android.sdkDirectory
+        val adb = File(sdkDir, "platform-tools/adb")
         exec {
             commandLine(
-                "adb", "shell", "am", "start",
+                adb.absolutePath, "shell", "am", "start",
                 "-n", "io.github.ezoushen.blur.demo/.MainActivity",
             )
         }
