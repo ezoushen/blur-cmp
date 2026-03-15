@@ -60,10 +60,8 @@ private val textTitle = TextStyle(color = Color.White, fontSize = 20.sp, fontWei
 fun BlurCmpDemoApp() {
     var mode by remember { mutableStateOf(DemoMode.Uniform) }
 
-    // The animated background MUST be outside BlurOverlayHost.
-    // BlurOverlayHost blurs what's BEHIND it in the window hierarchy.
-    // The background is drawn at the Activity/UIWindow level, and the
-    // blur overlay captures and blurs it.
+    // The animated background is drawn first (behind) in the Box.
+    // BlurOverlayHost blurs what's behind it in the view hierarchy.
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         // Background layer — this is what gets blurred
         AnimatedBackground()

@@ -1,26 +1,17 @@
 package io.github.ezoushen.blur.cmp
 
-import android.app.Activity
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.PorterDuffXfermode
 import android.os.Build
 import android.view.View
-import android.view.ViewGroup
-import android.widget.FrameLayout
+import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
 import com.example.blur.view.BlurView
 import com.example.blur.view.VariableBlurView
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.distinctUntilChanged
 
 @Composable
 actual fun BlurOverlayHost(
@@ -28,207 +19,66 @@ actual fun BlurOverlayHost(
     modifier: Modifier,
     content: @Composable () -> Unit,
 ) {
-    val activity = LocalContext.current as? Activity ?: run {
-        // Fallback: render content without blur if not in an Activity
+    if (!state.isEnabled) {
         content()
         return
     }
 
-    val decorView = activity.window.decorView as? ViewGroup ?: run {
-        content()
-        return
-    }
+    val config = state.config
 
-    val currentState by rememberUpdatedState(state)
-
-    // Manage the native blur view lifecycle
-    DisposableEffect(decorView) {
-        val blurContainer = createBlurContainer(decorView, currentState.config)
-        decorView.addView(
-            blurContainer,
-            0,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
-            ),
-        )
-
-        onDispose {
-            decorView.removeView(blurContainer)
-        }
-    }
-
-    // React to config changes
-    LaunchedEffect(Unit) {
-        snapshotFlow { currentState.config }
-            .distinctUntilChanged()
-            .collectLatest { config ->
-                val blurContainer = findBlurContainer(decorView) ?: return@collectLatest
-                updateBlurContainer(blurContainer, config)
-            }
-    }
-
-    // React to enabled state
-    LaunchedEffect(Unit) {
-        snapshotFlow { currentState.isEnabled }
-            .distinctUntilChanged()
-            .collectLatest { enabled ->
-                val blurContainer = findBlurContainer(decorView) ?: return@collectLatest
-                blurContainer.visibility = if (enabled) View.VISIBLE else View.GONE
-            }
-    }
-
-    // React to manual update trigger
-    LaunchedEffect(Unit) {
-        snapshotFlow { currentState.updateTrigger }
-            .distinctUntilChanged()
-            .collectLatest {
-                val blurContainer = findBlurContainer(decorView) ?: return@collectLatest
-                val blurView = blurContainer.getChildAt(0)
-                when (blurView) {
-                    is BlurView -> blurView.updateBlur()
-                    is VariableBlurView -> blurView.updateBlur()
-                }
-            }
-    }
-
-    // Compose content renders on top (in the normal Compose layer, above DecorView index 0)
-    content()
-}
-
-private const val BLUR_CONTAINER_TAG = "blur_cmp_container"
-
-private fun createBlurContainer(decorView: ViewGroup, config: BlurOverlayConfig): FrameLayout {
-    val context = decorView.context
-    val container = FrameLayout(context).apply {
-        tag = BLUR_CONTAINER_TAG
-    }
-
-    val blurView: View = if (config.gradient != null) {
-        VariableBlurView(context).apply {
-            setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
-            setBlurGradient(AndroidGradientMapper.toBlurGradient(config.gradient, config.radius))
-            setIsLive(config.isLive)
-            setBlurredView(decorView)
-        }
-    } else {
-        BlurView(context).apply {
-            setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
-            setIsLive(config.isLive)
-            setBlurredView(decorView)
-        }
-    }
-
-    container.addView(
-        blurView,
-        FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT,
-        ),
-    )
-
-    // Add tint overlay with blend mode if needed
-    if (config.tintColorValue != 0L && config.tintBlendMode != BlurBlendMode.Normal) {
-        val tintOverlay = TintOverlayView(context, config)
-        container.addView(
-            tintOverlay,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
-            ),
-        )
-    }
-
-    return container
-}
-
-private fun findBlurContainer(decorView: ViewGroup): FrameLayout? {
-    for (i in 0 until decorView.childCount) {
-        val child = decorView.getChildAt(i)
-        if (child.tag == BLUR_CONTAINER_TAG) return child as? FrameLayout
-    }
-    return null
-}
-
-private fun updateBlurContainer(container: FrameLayout, config: BlurOverlayConfig) {
-    val blurView = container.getChildAt(0)
-    val decorView = container.parent as? ViewGroup ?: return
-
-    when {
-        // Switching from uniform to variable requires recreation
-        config.gradient != null && blurView is BlurView -> {
-            container.removeAllViews()
-            val newBlur = VariableBlurView(container.context).apply {
-                setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
-                setBlurGradient(AndroidGradientMapper.toBlurGradient(config.gradient, config.radius))
-                setIsLive(config.isLive)
-                setBlurredView(decorView)
-            }
-            container.addView(
-                newBlur,
-                0,
-                FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                ),
+    Box(modifier = modifier) {
+        // Blur view fills the entire parent, drawn first (behind content)
+        if (config.gradient != null) {
+            // Variable blur
+            AndroidView(
+                factory = { ctx ->
+                    VariableBlurView(ctx).apply {
+                        setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
+                        setBlurGradient(
+                            AndroidGradientMapper.toBlurGradient(config.gradient!!, config.radius),
+                        )
+                        setIsLive(config.isLive)
+                    }
+                },
+                modifier = Modifier.matchParentSize(),
+                update = { view ->
+                    view.setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
+                    config.gradient?.let {
+                        view.setBlurGradient(
+                            AndroidGradientMapper.toBlurGradient(it, config.radius),
+                        )
+                    }
+                    view.setIsLive(config.isLive)
+                },
             )
-        }
-
-        config.gradient == null && blurView is VariableBlurView -> {
-            container.removeAllViews()
-            val newBlur = BlurView(container.context).apply {
-                setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
-                setIsLive(config.isLive)
-                setBlurredView(decorView)
-            }
-            container.addView(
-                newBlur,
-                0,
-                FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                ),
-            )
-        }
-
-        blurView is BlurView -> {
-            blurView.setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
-            blurView.setIsLive(config.isLive)
-        }
-
-        blurView is VariableBlurView -> {
-            blurView.setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
-            if (config.gradient != null) {
-                blurView.setBlurGradient(
-                    AndroidGradientMapper.toBlurGradient(config.gradient, config.radius),
-                )
-            }
-            blurView.setIsLive(config.isLive)
-        }
-    }
-
-    // Update or add/remove tint overlay
-    updateTintOverlay(container, config)
-}
-
-private fun updateTintOverlay(container: FrameLayout, config: BlurOverlayConfig) {
-    val existingTint = if (container.childCount > 1) container.getChildAt(1) else null
-
-    if (config.tintColorValue != 0L && config.tintBlendMode != BlurBlendMode.Normal) {
-        if (existingTint is TintOverlayView) {
-            existingTint.updateConfig(config)
         } else {
-            existingTint?.let { container.removeView(it) }
-            container.addView(
-                TintOverlayView(container.context, config),
-                FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                ),
+            // Uniform blur
+            AndroidView(
+                factory = { ctx ->
+                    BlurView(ctx).apply {
+                        setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
+                        setIsLive(config.isLive)
+                    }
+                },
+                modifier = Modifier.matchParentSize(),
+                update = { view ->
+                    view.setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
+                    view.setIsLive(config.isLive)
+                },
             )
         }
-    } else {
-        existingTint?.let { container.removeView(it) }
+
+        // Tint overlay for non-Normal blend modes
+        if (config.tintColorValue != 0L && config.tintBlendMode != BlurBlendMode.Normal) {
+            AndroidView(
+                factory = { ctx -> TintOverlayView(ctx, config) },
+                modifier = Modifier.matchParentSize(),
+                update = { view -> view.updateConfig(config) },
+            )
+        }
+
+        // Content drawn on top of blur
+        content()
     }
 }
 
@@ -236,7 +86,7 @@ private fun updateTintOverlay(container: FrameLayout, config: BlurOverlayConfig)
  * A view that draws a solid tint color with a specific blend mode.
  * Used when the blend mode is not Normal (blur-core's overlayColor only supports alpha blending).
  */
-private class TintOverlayView(
+internal class TintOverlayView(
     context: android.content.Context,
     config: BlurOverlayConfig,
 ) : View(context) {

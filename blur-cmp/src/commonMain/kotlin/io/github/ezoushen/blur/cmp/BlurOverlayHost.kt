@@ -4,14 +4,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 
 /**
- * A fullscreen blur overlay host. The blur layer renders beneath [content],
- * blurring everything behind it. [content] is drawn on top of the blur.
+ * A blur overlay host. The blur layer renders beneath [content] inside a [Box],
+ * blurring everything behind it in the view hierarchy. [content] is drawn on top
+ * of the blur.
  *
- * This must be used at the top level of your screen/activity — it injects a
- * native platform view at the window level.
+ * The native blur view is embedded inline in the Compose tree via [AndroidView] /
+ * [UIKitView], so content behind this composable in the z-order will be blurred.
  *
  * @param state Controls blur configuration at runtime. Create via [rememberBlurOverlayState].
- * @param modifier Modifier applied to the content container (not the blur layer itself).
+ * @param modifier Modifier applied to the outer [Box] container.
  * @param content Compose UI drawn on top of the blurred background.
  */
 @Composable

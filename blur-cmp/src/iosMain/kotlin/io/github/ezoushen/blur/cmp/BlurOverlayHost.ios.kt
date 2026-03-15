@@ -1,23 +1,17 @@
 package io.github.ezoushen.blur.cmp
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.interop.UIKitView
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.readValue
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.distinctUntilChanged
 import platform.CoreGraphics.CGRectZero
 import platform.Foundation.NSUUID
 import platform.Foundation.setValue
 import platform.QuartzCore.CALayer
 import platform.QuartzCore.CATransaction
 import platform.QuartzCore.kCAGravityResizeAspectFill
-import platform.UIKit.UIApplication
 import platform.UIKit.UIBlurEffect
 import platform.UIKit.UIBlurEffectStyle
 import platform.UIKit.UIColor
@@ -25,9 +19,6 @@ import platform.UIKit.UIView
 import platform.UIKit.UIViewAutoresizingFlexibleHeight
 import platform.UIKit.UIViewAutoresizingFlexibleWidth
 import platform.UIKit.UIVisualEffectView
-import platform.UIKit.UIWindow
-import platform.UIKit.UIWindowScene
-import platform.UIKit.UISceneActivationStateForegroundActive
 
 @OptIn(ExperimentalForeignApi::class)
 @Composable
@@ -36,53 +27,25 @@ actual fun BlurOverlayHost(
     modifier: Modifier,
     content: @Composable () -> Unit,
 ) {
-    val currentState by rememberUpdatedState(state)
-
-    DisposableEffect(Unit) {
-        val window = getKeyWindow() ?: run {
-            return@DisposableEffect onDispose { }
-        }
-
-        val blurView = createNativeBlurView(currentState.config)
-        blurView.tag = BLUR_VIEW_TAG
-        blurView.setFrame(window.bounds)
-        blurView.autoresizingMask =
-            UIViewAutoresizingFlexibleWidth or UIViewAutoresizingFlexibleHeight
-
-        window.insertSubview(blurView, atIndex = 0)
-
-        onDispose {
-            blurView.removeFromSuperview()
-            (blurView as? RealTimeBlurContainerView)?.release()
-        }
+    if (!state.isEnabled) {
+        content()
+        return
     }
 
-    // React to config changes
-    LaunchedEffect(Unit) {
-        snapshotFlow { currentState.config }
-            .distinctUntilChanged()
-            .collectLatest { config ->
-                val window = getKeyWindow() ?: return@collectLatest
-                val blurView = findBlurView(window) ?: return@collectLatest
-                updateNativeBlurView(blurView, config)
-            }
-    }
+    val config = state.config
 
-    // React to enabled state
-    LaunchedEffect(Unit) {
-        snapshotFlow { currentState.isEnabled }
-            .distinctUntilChanged()
-            .collectLatest { enabled ->
-                val window = getKeyWindow() ?: return@collectLatest
-                val blurView = findBlurView(window) ?: return@collectLatest
-                blurView.setHidden(!enabled)
-            }
-    }
+    Box(modifier = modifier) {
+        // Native blur view fills parent, drawn first (behind content)
+        UIKitView(
+            factory = { createNativeBlurView(config) },
+            modifier = Modifier.matchParentSize(),
+            update = { view -> updateNativeBlurView(view, config) },
+        )
 
-    content()
+        // Content drawn on top of blur
+        content()
+    }
 }
-
-private const val BLUR_VIEW_TAG: Long = 0x426C7572L
 
 // ---------------------------------------------------------------------------
 // Native blur view using CABackdropLayer (continuous radius, variable blur,
@@ -483,48 +446,36 @@ private fun updateNativeBlurView(blurView: UIView, config: BlurOverlayConfig) {
     val container = blurView as? RealTimeBlurContainerView
 
     if (container == null || container.isFallback) {
-        // Fallback: replace entirely
-        val window = blurView.superview as? UIWindow ?: return
+        // Fallback views cannot be updated in-place; replace the subviews
+        val parent = blurView.superview ?: return
         blurView.removeFromSuperview()
-        container?.release()
+        (container)?.release()
 
         val newView = createNativeBlurView(config)
-        newView.tag = BLUR_VIEW_TAG
-        newView.setFrame(window.bounds)
+        newView.setFrame(parent.bounds)
         newView.autoresizingMask =
             UIViewAutoresizingFlexibleWidth or UIViewAutoresizingFlexibleHeight
-        window.insertSubview(newView, atIndex = 0)
+        parent.insertSubview(newView, atIndex = 0)
         return
     }
 
     // Check if blur mode changed (uniform <-> variable)
     val needsVariableBlur = config.gradient != null
     if (needsVariableBlur != container.isVariableBlur) {
-        val window = blurView.superview as? UIWindow ?: return
+        val parent = blurView.superview ?: return
         blurView.removeFromSuperview()
         container.release()
 
         val newView = createNativeBlurView(config)
-        newView.tag = BLUR_VIEW_TAG
-        newView.setFrame(window.bounds)
+        newView.setFrame(parent.bounds)
         newView.autoresizingMask =
             UIViewAutoresizingFlexibleWidth or UIViewAutoresizingFlexibleHeight
-        window.insertSubview(newView, atIndex = 0)
+        parent.insertSubview(newView, atIndex = 0)
         return
     }
 
     // Update in-place (blend order change is handled inside applyConfigToBackdropView)
     applyConfigToBackdropView(container, config)
-}
-
-private fun findBlurView(window: UIWindow): UIView? {
-    val subviews = window.subviews
-    for (i in 0 until subviews.count().toInt()) {
-        @Suppress("UNCHECKED_CAST")
-        val subview = subviews[i] as? UIView ?: continue
-        if (subview.tag == BLUR_VIEW_TAG) return subview
-    }
-    return null
 }
 
 private fun uiColorFromPackedValue(packedValue: Long): UIColor? {
@@ -535,24 +486,4 @@ private fun uiColorFromPackedValue(packedValue: Long): UIColor? {
     val green = ((argb ushr 8) and 0xFF) / 255.0
     val blue = (argb and 0xFF) / 255.0
     return UIColor(red = red, green = green, blue = blue, alpha = alpha)
-}
-
-/**
- * Gets the key window using the modern UIWindowScene API (iOS 15+).
- * Falls back to the deprecated keyWindow property for compatibility.
- */
-@Suppress("DEPRECATION")
-private fun getKeyWindow(): UIWindow? {
-    val scenes = UIApplication.sharedApplication.connectedScenes
-    for (scene in scenes) {
-        val windowScene = scene as? UIWindowScene ?: continue
-        if (windowScene.activationState == UISceneActivationStateForegroundActive) {
-            val windows = windowScene.windows
-            for (window in windows) {
-                val uiWindow = window as? UIWindow ?: continue
-                if (uiWindow.isKeyWindow()) return uiWindow
-            }
-        }
-    }
-    return UIApplication.sharedApplication.keyWindow
 }
