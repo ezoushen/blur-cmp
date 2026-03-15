@@ -1,0 +1,33 @@
+name: iosApp
+options:
+  bundleIdPrefix: io.github.ezoushen.blur
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "16.3"
+
+settings:
+  ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+
+targets:
+  iosApp:
+    type: application
+    platform: iOS
+    sources:
+      - path: iosApp
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: io.github.ezoushen.blur.demo
+      INFOPLIST_FILE: iosApp/Info.plist
+      FRAMEWORK_SEARCH_PATHS:
+        - "$(SRCROOT)/../demoApp/build/bin/iosSimulatorArm64/debugFramework"
+        - "$(SRCROOT)/../demoApp/build/bin/iosArm64/releaseFramework"
+        - "$(inherited)"
+      OTHER_LINKER_FLAGS:
+        - "$(inherited)"
+        - "-framework"
+        - "DemoApp"
+    preBuildScripts:
+      - name: "Compile Kotlin Framework"
+        script: |
+          cd "$SRCROOT/.."
+          ./gradlew :demoApp:embedAndSignAppleFrameworkForXcode
+        basedOnDependencyAnalysis: false
