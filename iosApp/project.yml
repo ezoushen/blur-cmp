@@ -3,7 +3,6 @@ options:
   bundleIdPrefix: io.github.ezoushen.blur
   deploymentTarget:
     iOS: "16.0"
-  xcodeVersion: "16.3"
 
 settings:
   ENABLE_USER_SCRIPT_SANDBOXING: "NO"
@@ -17,9 +16,13 @@ targets:
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: io.github.ezoushen.blur.demo
       INFOPLIST_FILE: iosApp/Info.plist
+      CODE_SIGN_STYLE: Automatic
+      DEVELOPMENT_TEAM: 6RTPJGVKB3
       FRAMEWORK_SEARCH_PATHS:
-        - "$(SRCROOT)/../demoApp/build/bin/iosSimulatorArm64/debugFramework"
+        - "$(SRCROOT)/../demoApp/build/bin/iosArm64/debugFramework"
         - "$(SRCROOT)/../demoApp/build/bin/iosArm64/releaseFramework"
+        - "$(SRCROOT)/../demoApp/build/bin/iosSimulatorArm64/debugFramework"
+        - "$(SRCROOT)/../demoApp/build/bin/iosSimulatorArm64/releaseFramework"
         - "$(inherited)"
       OTHER_LINKER_FLAGS:
         - "$(inherited)"
