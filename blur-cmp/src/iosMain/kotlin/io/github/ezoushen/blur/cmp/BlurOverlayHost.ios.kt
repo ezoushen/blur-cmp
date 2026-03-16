@@ -1,17 +1,21 @@
 package io.github.ezoushen.blur.cmp
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.window.ComposeUIViewController
 import kotlinx.cinterop.BetaInteropApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.Foundation.NSLog
 import platform.Foundation.NSStringFromClass
 import platform.Foundation.setValue
-import platform.Foundation.NSUUID
 import platform.QuartzCore.CALayer
 import platform.QuartzCore.CATransaction
 import platform.UIKit.UIApplication
@@ -21,24 +25,27 @@ import platform.UIKit.UIColor
 import platform.UIKit.UIView
 import platform.UIKit.UIViewAutoresizingFlexibleHeight
 import platform.UIKit.UIViewAutoresizingFlexibleWidth
+import platform.UIKit.UIViewController
 import platform.UIKit.UIVisualEffectView
+import platform.UIKit.UIWindow
+import platform.UIKit.UIWindowLevelNormal
 import platform.objc.object_getClass
 
 /**
  * iOS BlurOverlayHost using native CABackdropLayer.
  *
- * Strategy: Extract _UIVisualEffectBackdropView from a temporary UIVisualEffectView
- * (the backdrop view contains a pre-configured UICABackdropLayer), then customize
- * its blur filter with our desired radius. This works because UIKit's own backdrop
- * view is fully initialized by the system, unlike manually instantiated CABackdropLayer.
+ * Architecture:
+ *   CMP MetalView (renders background)
+ *     ↓ captured by
+ *   Blur overlay (CABackdropLayer on rootVC view)
+ *     ↓ content on top via
+ *   Content UIWindow (separate UIWindow with ComposeUIViewController)
  *
- * The blur view is added to rootViewController.view so CABackdropLayer can capture
- * CMP's Metal-rendered content below it.
- *
- * Touch interaction passes through the blur overlay (userInteractionEnabled=false),
- * so CMP controls underneath remain interactive.
+ * The blur overlay captures and blurs CMP's Metal-rendered background.
+ * Content is rendered in a separate UIWindow above the blur so it stays sharp.
+ * Touches pass through the content window's transparent areas to CMP underneath.
  */
-@OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
+@OptIn(ExperimentalForeignApi::class, BetaInteropApi::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 actual fun BlurOverlayHost(
     state: BlurOverlayState,
@@ -58,13 +65,47 @@ actual fun BlurOverlayHost(
 
     val blurState = remember { IosBlurState() }
 
-    // Add blur overlay to the rootVC view hierarchy
+    // Store the content composable in a holder accessible by the content window
+    val contentHolder = remember { ContentHolder() }
+    contentHolder.content = content
+
+    // Set up blur overlay and content window
     DisposableEffect(Unit) {
         platform.darwin.dispatch_async(platform.darwin.dispatch_get_main_queue()) {
             val window = UIApplication.sharedApplication.keyWindow
             val rootView = window?.rootViewController?.view
-            if (rootView != null) {
+            val windowScene = window?.windowScene
+
+            if (rootView != null && windowScene != null) {
+                // 1. Add blur overlay to rootVC view
                 blurState.setupInView(rootView, config)
+
+                // 2. Create content window above the blur
+                val contentWindow = UIWindow(windowScene = windowScene)
+                contentWindow.windowLevel = UIWindowLevelNormal + 1.0
+                contentWindow.backgroundColor = UIColor.clearColor
+                contentWindow.setOpaque(false)
+
+                // Create a ComposeUIViewController for the content
+                val contentVC = ComposeUIViewController(
+                    configure = { opaque = false }
+                ) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        contentHolder.content()
+                    }
+                }
+                contentVC.view.backgroundColor = UIColor.clearColor
+                contentVC.view.setOpaque(false)
+
+                // Make the entire content window and its view hierarchy transparent
+                contentWindow.rootViewController = contentVC
+                contentWindow.makeKeyAndVisible()
+
+                NSLog("[BlurOverlayHost] Content window created with opaque=false")
+
+                blurState.contentWindow = contentWindow
+
+                NSLog("[BlurOverlayHost] Setup complete: blur overlay + content window")
             }
         }
 
@@ -77,30 +118,22 @@ actual fun BlurOverlayHost(
         blurState.applyConfig(config)
     }
 
-    // Background renders into CMP's MetalView → captured by CABackdropLayer.
-    // Content renders on top in the same MetalView.
-    // Since CMP's MetalView is BELOW the blur overlay in the view hierarchy,
-    // the blur effect covers the entire CMP content.
-    // Content controls remain interactive because userInteractionEnabled=false
-    // on the blur overlay passes touches through to CMP.
-    //
-    // Visual ordering (top to bottom):
-    //   blur overlay (transparent, shows blurred content)
-    //   CMP MetalView (renders background + content)
-    //
-    // The user sees blurred background with content text/buttons also blurred.
-    // For a production version, content should be rendered in a separate layer
-    // above the blur (e.g., via a second UIWindow or ComposeUIViewController child).
-    // For now, we render everything through CMP and accept the full-screen blur.
+    // Only render background in the main CMP tree.
+    // Content is rendered in the separate content window above the blur.
     Box(modifier = modifier) {
         background()
-        content()
     }
 }
 
 /**
+ * Holds a reference to the content composable for cross-window rendering.
+ */
+private class ContentHolder {
+    var content: @Composable () -> Unit by mutableStateOf({})
+}
+
+/**
  * Manages the native iOS blur layer hierarchy.
- * Uses extracted _UIVisualEffectBackdropView for reliable CABackdropLayer behavior.
  */
 @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
 internal class IosBlurState {
@@ -109,11 +142,11 @@ internal class IosBlurState {
     var tintLayer: CALayer? = null
     var preBlendBackdropView: UIView? = null
     var preBlendTintLayer: CALayer? = null
+    var contentWindow: UIWindow? = null
     val maskCache = IosGradientMaskCache()
     var isBeforeBlurActive = false
 
     fun setupInView(parentView: UIView, initialConfig: BlurOverlayConfig) {
-        // Create transparent container
         val cont = UIView(frame = parentView.bounds)
         cont.backgroundColor = UIColor.clearColor
         cont.setOpaque(false)
@@ -122,7 +155,6 @@ internal class IosBlurState {
             UIViewAutoresizingFlexibleWidth or UIViewAutoresizingFlexibleHeight
         )
 
-        // Extract backdrop view from UIVisualEffectView
         val backdropView = extractBackdropView()
         if (backdropView != null) {
             backdropView.setFrame(cont.bounds)
@@ -132,16 +164,10 @@ internal class IosBlurState {
             cont.addSubview(backdropView)
             backdropLayer = backdropView.layer
 
-            val layerCls = NSStringFromClass(object_getClass(backdropView.layer)!!)
-            NSLog("[IosBlurState] backdrop layer class: $layerCls")
-
-            // Add tint layer on top
             val tint = CALayer()
             tint.setFrame(cont.layer.bounds)
             cont.layer.addSublayer(tint)
             tintLayer = tint
-        } else {
-            NSLog("[IosBlurState] Failed to extract backdrop view!")
         }
 
         parentView.addSubview(cont)
@@ -150,10 +176,6 @@ internal class IosBlurState {
         applyConfig(initialConfig)
     }
 
-    /**
-     * Extract _UIVisualEffectBackdropView from a temporary UIVisualEffectView.
-     * This gives us a fully initialized backdrop view with a working UICABackdropLayer.
-     */
     private fun extractBackdropView(): UIView? {
         val effectView = UIVisualEffectView(
             effect = UIBlurEffect.effectWithStyle(UIBlurEffectStyle.UIBlurEffectStyleLight)
@@ -176,7 +198,6 @@ internal class IosBlurState {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
 
-        // Apply blur filter
         val gradient = config.gradient
         if (gradient != null && IosBackdropLayerProvider.isValidForVariableBlur) {
             val mask = maskCache.getOrCreate(gradient)
@@ -201,10 +222,7 @@ internal class IosBlurState {
             }
         }
 
-        // Don't override scale — the extracted backdrop view has its own default (0.25)
-        // Setting scale here was causing the backdrop to stop rendering.
-
-        // Apply tint
+        // Don't override scale — the extracted backdrop view has its own default
         applyTint(config)
 
         CATransaction.commit()
@@ -237,30 +255,21 @@ internal class IosBlurState {
 
     private fun setupPreBlend() {
         val cont = container ?: return
-        // Extract another backdrop view for pre-blend
         val preBlendView = extractBackdropView() ?: return
         preBlendView.setFrame(cont.bounds)
         preBlendView.setAutoresizingMask(
             UIViewAutoresizingFlexibleWidth or UIViewAutoresizingFlexibleHeight
         )
-
-        // Apply zero-radius blur (pass-through)
         val zeroFilter = IosBackdropLayerProvider.createGaussianBlurFilter(radius = 0.0)
         if (zeroFilter != null) {
             val arr = platform.Foundation.NSMutableArray()
             arr.addObject(zeroFilter)
             preBlendView.layer.setValue(arr, forKey = "filters")
         }
-        preBlendView.layer.setValue(1.0, forKey = "scale")
-
-        // Tint sublayer on the pre-blend backdrop
         val tint = CALayer()
         tint.setFrame(cont.layer.bounds)
         preBlendView.layer.addSublayer(tint)
-
-        // Insert below the main blur
         cont.insertSubview(preBlendView, atIndex = 0)
-
         preBlendBackdropView = preBlendView
         preBlendTintLayer = tint
         isBeforeBlurActive = true
@@ -291,5 +300,7 @@ internal class IosBlurState {
         container = null
         backdropLayer = null
         tintLayer = null
+        contentWindow?.setHidden(true)
+        contentWindow = null
     }
 }
