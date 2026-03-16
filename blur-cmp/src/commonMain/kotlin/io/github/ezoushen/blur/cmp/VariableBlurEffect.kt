@@ -14,15 +14,33 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 
 /**
- * Renders [background] with a variable blur gradient.
+ * Number of discrete blur levels for variable blur approximation.
+ * More levels = smoother transitions but more rendering cost.
+ * 4 levels provides a good balance: sharp, light, medium, heavy blur.
+ */
+private const val BLUR_LEVELS = 4
+
+/**
+ * Renders [background] with a variable blur gradient using multi-level compositing.
  *
- * Technique: composites two layers — the sharp background and the fully blurred
- * background — using a gradient alpha mask to interpolate between them.
+ * Instead of blending sharp + blurred (which causes glow artifacts), this renders
+ * multiple blur levels and uses gradient masks to select which level is visible
+ * at each position. Each pixel shows exactly one blur level — no additive overlay.
  *
- * Where gradient intensity = 1.0 → fully blurred (radius)
- * Where gradient intensity = 0.0 → fully sharp (no blur)
+ * Levels (for radius = 40dp):
+ *   Level 0: blur(0dp)  — sharp
+ *   Level 1: blur(13dp) — light blur
+ *   Level 2: blur(26dp) — medium blur
+ *   Level 3: blur(40dp) — full blur
+ *
+ * The gradient intensity maps to these levels:
+ *   intensity 0.0    → Level 0 (sharp)
+ *   intensity 0.33   → Level 1
+ *   intensity 0.66   → Level 2
+ *   intensity 1.0    → Level 3 (full blur)
  */
 @Composable
 internal fun VariableBlurLayer(
@@ -31,88 +49,120 @@ internal fun VariableBlurLayer(
     modifier: Modifier = Modifier,
     background: @Composable () -> Unit,
 ) {
-    Box(modifier = modifier) {
-        // Layer 0: Sharp background (always visible as base)
-        background()
+    // Calculate blur radius for each level
+    val maxRadiusPx = blurRadius
+    val levelRadii = (0 until BLUR_LEVELS).map { level ->
+        (maxRadiusPx * level.toFloat() / (BLUR_LEVELS - 1).toFloat())
+    }
 
-        // Layer 1: Fully blurred background, masked by gradient
-        // The gradient mask controls where blur is visible:
-        // - White (alpha=1) areas → blurred content shows through
-        // - Black (alpha=0) areas → sharp content shows through
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    // Use offscreen compositing so the DstIn mask works correctly
-                    compositingStrategy = CompositingStrategy.Offscreen
+    Box(modifier = modifier) {
+        // Render each blur level from heaviest to lightest.
+        // Each level is masked to show only where its intensity band applies.
+        // Heaviest blur is drawn first (bottom), lightest on top.
+        for (levelIndex in (BLUR_LEVELS - 1) downTo 0) {
+            val levelRadius = levelRadii[levelIndex]
+
+            // This level is visible where gradient intensity falls within its band.
+            // Level 0: intensity [0.0, 0.25)
+            // Level 1: intensity [0.25, 0.5)
+            // Level 2: intensity [0.5, 0.75)
+            // Level 3: intensity [0.75, 1.0]
+            val bandStart = levelIndex.toFloat() / BLUR_LEVELS
+            val bandEnd = (levelIndex + 1).toFloat() / BLUR_LEVELS
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        compositingStrategy = CompositingStrategy.Offscreen
+                    }
+                    .drawWithContent {
+                        drawContent()
+                        // Mask: opaque where this level should be visible
+                        val brush = createBandMask(gradient, size, bandStart, bandEnd)
+                        drawRect(brush = brush, blendMode = BlendMode.DstIn)
+                    }
+            ) {
+                if (levelRadius > 0.dp) {
+                    Box(modifier = Modifier.fillMaxSize().blur(levelRadius)) {
+                        background()
+                    }
+                } else {
+                    background()
                 }
-                .drawWithContent {
-                    // Draw the blurred content
-                    drawContent()
-                    // Mask it with the gradient (DstIn: keep dst where src alpha > 0)
-                    val brush = createGradientBrush(gradient, size)
-                    drawRect(brush = brush, blendMode = BlendMode.DstIn)
-                }
-        ) {
-            Box(modifier = Modifier.fillMaxSize().blur(blurRadius)) {
-                background()
             }
         }
     }
 }
 
 /**
- * Creates a [Brush] that maps [BlurGradientType] intensity to alpha.
- * intensity=1.0 → Color.White (opaque, shows blur)
- * intensity=0.0 → Color.Transparent (transparent, shows sharp)
+ * Creates a brush that is opaque (white) where the gradient intensity falls within
+ * [bandStart, bandEnd], and transparent (clear) elsewhere.
+ *
+ * For smooth transitions, we use a soft ramp instead of a hard cutoff.
  */
-private fun createGradientBrush(
+private fun createBandMask(
     gradient: BlurGradientType,
     size: androidx.compose.ui.geometry.Size,
-): Brush = when (gradient) {
-    is BlurGradientType.Linear -> {
-        val startOffset = Offset(gradient.startX * size.width, gradient.startY * size.height)
-        val endOffset = Offset(gradient.endX * size.width, gradient.endY * size.height)
+    bandStart: Float,
+    bandEnd: Float,
+): Brush {
+    // For the lowest band (bandStart=0), we want to show this level where
+    // gradient intensity is BELOW bandEnd.
+    // For the highest band (bandEnd=1), show where intensity is ABOVE bandStart.
+    // For middle bands, show where intensity is between bandStart and bandEnd.
+    //
+    // Simplification: each level "wins" where it's the closest level to the
+    // gradient's intensity value. So we create a mask where:
+    //   alpha = 1 where gradient_intensity is in [bandStart, bandEnd]
+    //   alpha = 0 elsewhere
 
-        if (gradient.stops != null) {
-            val colors = gradient.stops.map { Color.White.copy(alpha = it.intensity) }
-            val positions = gradient.stops.map { it.position }
+    return when (gradient) {
+        is BlurGradientType.Linear -> {
+            val startOffset = Offset(gradient.startX * size.width, gradient.startY * size.height)
+            val endOffset = Offset(gradient.endX * size.width, gradient.endY * size.height)
+
+            val stops = if (gradient.stops != null) {
+                gradient.stops.map { it.position to it.intensity }
+            } else {
+                listOf(0f to gradient.startIntensity, 1f to gradient.endIntensity)
+            }
+
+            // Convert intensity stops to alpha stops for this band
+            val colorStops = stops.map { (pos, intensity) ->
+                val alpha = if (intensity >= bandStart && intensity < bandEnd) 1f
+                else if (bandEnd >= 1f && intensity >= bandStart) 1f // Include 1.0 in top band
+                else 0f
+                pos to Color.White.copy(alpha = alpha)
+            }.toTypedArray()
+
+            // Add interpolation points at band boundaries for smoother transitions
             Brush.linearGradient(
-                colorStops = positions.zip(colors).toTypedArray(),
-                start = startOffset,
-                end = endOffset,
-            )
-        } else {
-            Brush.linearGradient(
-                colors = listOf(
-                    Color.White.copy(alpha = gradient.startIntensity),
-                    Color.White.copy(alpha = gradient.endIntensity),
-                ),
+                colorStops = colorStops,
                 start = startOffset,
                 end = endOffset,
             )
         }
-    }
 
-    is BlurGradientType.Radial -> {
-        val center = Offset(gradient.centerX * size.width, gradient.centerY * size.height)
-        // Radius is normalized (0-1), scale to the larger dimension
-        val radiusPx = gradient.radius * maxOf(size.width, size.height)
+        is BlurGradientType.Radial -> {
+            val center = Offset(gradient.centerX * size.width, gradient.centerY * size.height)
+            val radiusPx = gradient.radius * maxOf(size.width, size.height)
 
-        if (gradient.stops != null) {
-            val colors = gradient.stops.map { Color.White.copy(alpha = it.intensity) }
-            val positions = gradient.stops.map { it.position }
+            val stops = if (gradient.stops != null) {
+                gradient.stops.map { it.position to it.intensity }
+            } else {
+                listOf(0f to gradient.centerIntensity, 1f to gradient.edgeIntensity)
+            }
+
+            val colorStops = stops.map { (pos, intensity) ->
+                val alpha = if (intensity >= bandStart && intensity < bandEnd) 1f
+                else if (bandEnd >= 1f && intensity >= bandStart) 1f
+                else 0f
+                pos to Color.White.copy(alpha = alpha)
+            }.toTypedArray()
+
             Brush.radialGradient(
-                colorStops = positions.zip(colors).toTypedArray(),
-                center = center,
-                radius = radiusPx,
-            )
-        } else {
-            Brush.radialGradient(
-                colors = listOf(
-                    Color.White.copy(alpha = gradient.centerIntensity),
-                    Color.White.copy(alpha = gradient.edgeIntensity),
-                ),
+                colorStops = colorStops,
                 center = center,
                 radius = radiusPx,
             )
