@@ -4,12 +4,14 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.os.Build
 import android.view.View
+import android.widget.FrameLayout
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.blur.view.BlurView
@@ -18,14 +20,10 @@ import com.example.blur.view.VariableBlurView
 /**
  * Android BlurOverlayHost using blur-core's native BlurView/VariableBlurView.
  *
- * These views use DecorView capture + OpenGL Dual Kawase blur for GPU-accelerated
- * real-time backdrop blur. The StopCaptureException has been replaced with a
- * return-based skip to avoid Compose RenderNode corruption.
- *
- * For color dodge ordering: background → tint+dodge → blur is achieved by
- * using blur-core's overlay system for Normal blend, and a custom TintOverlayView
- * underneath the blur for non-Normal blend modes (the blur captures and blurs
- * the combined background + tint).
+ * Content is wrapped in a separate Android View container and registered as
+ * "excluded" from blur capture. During DecorView capture, the content container
+ * is set to INVISIBLE so its pixels don't appear in the captured bitmap.
+ * This prevents the glow artifact (blurred text behind sharp text).
  */
 @Composable
 actual fun BlurOverlayHost(
@@ -46,9 +44,6 @@ actual fun BlurOverlayHost(
             val isNonNormalBlend = config.tintBlendMode != BlurBlendMode.Normal
 
             if (hasTint && isNonNormalBlend) {
-                // For non-Normal blend modes: apply tint with blend mode BEFORE blur.
-                // This TintOverlayView sits between background and blur, so the blur
-                // captures and blurs the combined (background + tint+dodge) result.
                 AndroidView(
                     factory = { ctx -> TintOverlayView(ctx) },
                     modifier = Modifier.fillMaxSize(),
@@ -59,7 +54,6 @@ actual fun BlurOverlayHost(
             }
 
             if (gradient != null) {
-                // Variable blur using blur-core's VariableBlurView (OpenGL pyramid)
                 val context = LocalContext.current
                 val blurView = remember { VariableBlurView(context) }
 
@@ -73,13 +67,17 @@ actual fun BlurOverlayHost(
                     update = { view ->
                         val blurGradient = AndroidGradientMapper.toBlurGradient(gradient, config.radius)
                         view.setBlurGradient(blurGradient)
-                        // Only pass overlay for Normal blend (non-Normal is handled by TintOverlayView above)
                         view.setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
                         view.setIsLive(config.isLive)
                     },
                 )
+
+                // Content in a ComposeView wrapped by a FrameLayout, excluded from capture
+                ContentOverlay(
+                    blurView = blurView,
+                    content = content,
+                )
             } else {
-                // Uniform blur using blur-core's BlurView (OpenGL Dual Kawase)
                 val context = LocalContext.current
                 val blurView = remember { BlurView(context) }
 
@@ -95,21 +93,62 @@ actual fun BlurOverlayHost(
                         view.setIsLive(config.isLive)
                     },
                 )
+
+                // Content in a ComposeView wrapped by a FrameLayout, excluded from capture
+                ContentOverlay(
+                    blurView = blurView,
+                    content = content,
+                )
             }
-
-            // For Normal blend, tint is already applied by blur-core's overlayColor.
-            // No additional tint layer needed.
+        } else {
+            // Blur disabled — render content directly
+            content()
         }
-
-        // Controls on top (always sharp)
-        content()
     }
 }
 
 /**
+ * Renders content in a separate Android View container that is excluded from
+ * blur capture. The container is set to INVISIBLE during DecorView capture,
+ * preventing content pixels from appearing in the blurred bitmap.
+ */
+@Composable
+private fun ContentOverlay(
+    blurView: View,
+    content: @Composable () -> Unit,
+) {
+    AndroidView(
+        factory = { ctx ->
+            val container = FrameLayout(ctx)
+            val composeView = ComposeView(ctx).apply {
+                setContent { content() }
+            }
+            container.addView(
+                composeView,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                )
+            )
+            // Register this container to be hidden during blur capture
+            when (blurView) {
+                is BlurView -> blurView.addExcludedView(container)
+                is VariableBlurView -> blurView.addExcludedView(container)
+            }
+            container
+        },
+        modifier = Modifier.fillMaxSize(),
+        onRelease = { container ->
+            when (blurView) {
+                is BlurView -> blurView.removeExcludedView(container)
+                is VariableBlurView -> blurView.removeExcludedView(container)
+            }
+        },
+    )
+}
+
+/**
  * A lightweight Android View that draws a tint overlay with a specified blend mode.
- * Used for non-Normal blend modes where the tint must be applied BEFORE the blur
- * captures the content (background → tint+dodge → blur ordering).
  */
 private class TintOverlayView(context: android.content.Context) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
