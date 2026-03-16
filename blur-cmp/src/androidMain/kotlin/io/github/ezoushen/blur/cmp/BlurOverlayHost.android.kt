@@ -9,7 +9,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
@@ -109,19 +112,23 @@ actual fun BlurOverlayHost(
 
 /**
  * Renders content in a separate Android View container that is excluded from
- * blur capture. The container is set to INVISIBLE during DecorView capture,
- * preventing content pixels from appearing in the blurred bitmap.
+ * blur capture. Uses a ContentHolder so content lambda changes propagate
+ * across recompositions (the ComposeView is created once in factory but
+ * reads from the mutable holder on each recomposition).
  */
 @Composable
 private fun ContentOverlay(
     blurView: View,
     content: @Composable () -> Unit,
 ) {
+    val contentHolder = remember { AndroidContentHolder() }
+    contentHolder.content = content
+
     AndroidView(
         factory = { ctx ->
             val container = FrameLayout(ctx)
             val composeView = ComposeView(ctx).apply {
-                setContent { content() }
+                setContent { contentHolder.content() }
             }
             container.addView(
                 composeView,
@@ -130,7 +137,6 @@ private fun ContentOverlay(
                     FrameLayout.LayoutParams.MATCH_PARENT,
                 )
             )
-            // Register this container to be hidden during blur capture
             when (blurView) {
                 is BlurView -> blurView.addExcludedView(container)
                 is VariableBlurView -> blurView.addExcludedView(container)
@@ -145,6 +151,10 @@ private fun ContentOverlay(
             }
         },
     )
+}
+
+private class AndroidContentHolder {
+    var content: @Composable () -> Unit by mutableStateOf({})
 }
 
 /**
