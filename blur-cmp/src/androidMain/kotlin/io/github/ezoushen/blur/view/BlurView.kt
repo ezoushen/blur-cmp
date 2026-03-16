@@ -10,57 +10,50 @@ import android.util.TypedValue
 import android.view.View
 import android.view.ViewTreeObserver
 import android.widget.FrameLayout
-import androidx.compose.ui.geometry.Offset
 import io.github.ezoushen.blur.BlurConfig
-import io.github.ezoushen.blur.BlurGradient
-import io.github.ezoushen.blur.R
-import io.github.ezoushen.blur.VariableBlurController
+import io.github.ezoushen.blur.BlurController
+import io.github.ezoushen.blur.cmp.R
 import io.github.ezoushen.blur.capture.DecorViewCapture
 
 /**
- * A View that provides variable blur effect where the blur radius varies
- * across the view based on a gradient.
+ * A View that provides real-time blur effect on the content behind it,
+ * similar to iOS's UIVisualEffectView.
  *
- * This enables effects like:
- * - Depth-of-field (sharp center, blurred edges)
- * - Directional blur (blur increasing from top to bottom)
- * - Spotlight effect (sharp focus point with surrounding blur)
+ * This view captures the content behind it and applies a blur effect in real-time.
+ * It's designed to work with any View hierarchy and supports both static and
+ * dynamic content.
  *
  * Usage:
  * ```xml
- * <io.github.ezoushen.blur.view.VariableBlurView
+ * <io.github.ezoushen.blur.view.BlurView
  *     android:layout_width="match_parent"
  *     android:layout_height="wrap_content"
- *     app:gradientType="radial"
- *     app:startRadius="0"
- *     app:endRadius="30"
- *     app:blurOverlayColor="#40FFFFFF" />
+ *     app:blurRadius="16dp"
+ *     app:blurOverlayColor="#80FFFFFF" />
  * ```
  *
  * Or programmatically:
  * ```kotlin
- * val blurView = VariableBlurView(context).apply {
- *     setBlurGradient(BlurGradient.radialGradient(centerRadius = 0f, edgeRadius = 30f))
+ * val blurView = BlurView(context).apply {
+ *     setBlurConfig(BlurConfig(radius = 16f, overlayColor = 0x80FFFFFF.toInt()))
  *     setBlurEnabled(true)
  * }
  * ```
  *
- * @see BlurGradient
  * @see BlurConfig
  */
-class VariableBlurView @JvmOverloads constructor(
+class BlurView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0
 ) : FrameLayout(context, attrs, defStyleAttr) {
 
     private var blurConfig: BlurConfig = BlurConfig.Default
-    private var blurGradient: BlurGradient = BlurGradient.verticalGradient(0f, 16f)
     private var isBlurEnabled: Boolean = true
     private var isLive: Boolean = true
     private var blurredView: View? = null
 
-    private var blurController: VariableBlurController? = null
+    private var blurController: BlurController? = null
     private var decorView: View? = null
 
     // For tracking rendering state to prevent infinite recursion
@@ -83,102 +76,58 @@ class VariableBlurView @JvmOverloads constructor(
 
     init {
         // CRITICAL: Enable onDraw() for ViewGroup
+        // ViewGroup sets setWillNotDraw(true) by default, so onDraw() is never called
+        // We need onDraw() to draw the blurred content
         setWillNotDraw(false)
 
         // Parse XML attributes
         attrs?.let { parseAttributes(context, it) }
 
         // Initialize blur controller
-        blurController = VariableBlurController(context, blurConfig).apply {
-            setGradient(blurGradient)
-        }
+        blurController = BlurController(context, blurConfig)
     }
 
     private fun parseAttributes(context: Context, attrs: AttributeSet) {
-        val typedArray = context.obtainStyledAttributes(attrs, R.styleable.VariableBlurView)
+        val typedArray = context.obtainStyledAttributes(attrs, R.styleable.BlurView)
 
         try {
-            // Parse gradient type
-            val gradientType = typedArray.getInt(
-                R.styleable.VariableBlurView_gradientType,
-                GRADIENT_TYPE_LINEAR
-            )
-
-            // Parse start and end radius
+            // Parse blur radius
             val defaultRadius = TypedValue.applyDimension(
                 TypedValue.COMPLEX_UNIT_DIP, 16f,
                 context.resources.displayMetrics
             )
-            val startRadius = typedArray.getDimension(
-                R.styleable.VariableBlurView_startRadius,
-                0f
-            )
-            val endRadius = typedArray.getDimension(
-                R.styleable.VariableBlurView_endRadius,
+            val radius = typedArray.getDimension(
+                R.styleable.BlurView_blurRadius,
                 defaultRadius
-            )
-
-            // Parse gradient center (for radial/sweep)
-            val centerX = typedArray.getFloat(
-                R.styleable.VariableBlurView_gradientCenterX,
-                0.5f
-            )
-            val centerY = typedArray.getFloat(
-                R.styleable.VariableBlurView_gradientCenterY,
-                0.5f
-            )
-
-            // Parse gradient radius (for radial)
-            val gradientRadius = typedArray.getFloat(
-                R.styleable.VariableBlurView_gradientRadius,
-                1f
-            )
-
-            // Parse gradient angle (for linear)
-            val angle = typedArray.getFloat(
-                R.styleable.VariableBlurView_gradientAngle,
-                90f // Default: top to bottom
             )
 
             // Parse downsample factor
             val downsample = typedArray.getFloat(
-                R.styleable.VariableBlurView_blurDownsample,
+                R.styleable.BlurView_blurDownsample,
                 4f
             )
 
-            // Parse overlay color
+            // Parse overlay color (includes alpha)
             val overlayColor = typedArray.getColor(
-                R.styleable.VariableBlurView_blurOverlayColor,
+                R.styleable.BlurView_blurOverlayColor,
                 Color.TRANSPARENT
             ).takeIf { it != Color.TRANSPARENT }
 
             // Parse enabled state
             isBlurEnabled = typedArray.getBoolean(
-                R.styleable.VariableBlurView_blurEnabled,
+                R.styleable.BlurView_blurEnabled,
                 true
             )
 
             // Parse live state
             isLive = typedArray.getBoolean(
-                R.styleable.VariableBlurView_blurIsLive,
+                R.styleable.BlurView_blurIsLive,
                 true
             )
 
-            // Create gradient based on type
-            blurGradient = when (gradientType) {
-                GRADIENT_TYPE_LINEAR -> BlurGradient.angledGradient(startRadius, endRadius, angle)
-                GRADIENT_TYPE_RADIAL -> BlurGradient.radialGradient(
-                    centerRadius = startRadius,
-                    edgeRadius = endRadius,
-                    center = Offset(centerX, centerY),
-                    radius = gradientRadius
-                )
-                else -> BlurGradient.verticalGradient(startRadius, endRadius)
-            }
-
-            // Apply config
+            // Apply parsed config
             blurConfig = BlurConfig(
-                radius = endRadius, // Use max radius for config
+                radius = radius,
                 overlayColor = overlayColor,
                 downsampleFactor = downsample
             )
@@ -186,23 +135,6 @@ class VariableBlurView @JvmOverloads constructor(
             typedArray.recycle()
         }
     }
-
-    /**
-     * Sets the blur gradient for variable blur effect.
-     *
-     * @param gradient The gradient that defines how blur radius varies
-     */
-    fun setBlurGradient(gradient: BlurGradient) {
-        blurGradient = gradient
-        blurController?.setGradient(gradient)
-        blurController?.invalidate()
-        invalidate()
-    }
-
-    /**
-     * Gets the current blur gradient.
-     */
-    fun getBlurGradient(): BlurGradient = blurGradient
 
     /**
      * Sets the blur configuration.
@@ -218,8 +150,22 @@ class VariableBlurView @JvmOverloads constructor(
 
     /**
      * Gets the current blur configuration.
+     *
+     * @return The current blur configuration.
      */
     fun getBlurConfig(): BlurConfig = blurConfig
+
+    /**
+     * Sets the blur radius.
+     *
+     * @param radius The blur radius in pixels (0-25).
+     */
+    fun setBlurRadius(radius: Float) {
+        blurConfig = blurConfig.copy(radius = radius.coerceIn(0f, 25f))
+        blurController?.setConfig(blurConfig)
+        blurController?.invalidate()
+        invalidate()
+    }
 
     /**
      * Sets the overlay color with alpha.
@@ -260,6 +206,8 @@ class VariableBlurView @JvmOverloads constructor(
 
     /**
      * Checks if the blur effect is enabled.
+     *
+     * @return True if blur is enabled, false otherwise.
      */
     fun isBlurEnabled(): Boolean = isBlurEnabled
 
@@ -285,14 +233,20 @@ class VariableBlurView @JvmOverloads constructor(
 
     /**
      * Checks if the blur is updating in real-time.
+     *
+     * @return True if real-time updates are enabled, false otherwise.
      */
     fun isLive(): Boolean = isLive
 
-    /**
-     * Register a view to exclude from blur capture.
-     */
+    // Pending excluded views (stored until controller is ready)
     private val pendingExcludedViews = mutableListOf<View>()
 
+    /**
+     * Register a view to exclude from blur capture.
+     * The view is hidden during capture to prevent its content from appearing
+     * in the blurred bitmap (which causes glow artifacts when the view is also
+     * drawn sharp on top of the blur).
+     */
     fun addExcludedView(view: View) {
         val controller = blurController
         if (controller != null) {
@@ -302,6 +256,9 @@ class VariableBlurView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * Unregister a previously excluded view.
+     */
     fun removeExcludedView(view: View) {
         pendingExcludedViews.remove(view)
         blurController?.removeExcludedView(view)
@@ -327,7 +284,8 @@ class VariableBlurView @JvmOverloads constructor(
     }
 
     /**
-     * Updates the blur effect manually.
+     * Updates the blur effect. Call this when the content behind the view changes
+     * and real-time updates are disabled for performance reasons.
      */
     fun updateBlur() {
         blurController?.invalidate()
@@ -349,7 +307,6 @@ class VariableBlurView @JvmOverloads constructor(
         val source = blurredView ?: decorView
         if (source != null) {
             blurController?.setConfig(blurConfig)
-            blurController?.setGradient(blurGradient)
             blurController?.init(this, source)
 
             // Forward any pending excluded views to the controller
@@ -384,6 +341,7 @@ class VariableBlurView @JvmOverloads constructor(
         }
 
         if (isRendering) {
+            // Skip draw if we're already rendering (shouldn't happen)
             return
         }
 
@@ -408,6 +366,7 @@ class VariableBlurView @JvmOverloads constructor(
     private fun getActivityDecorView(): View? {
         var ctx: Context? = context
 
+        // Unwrap ContextWrapper to find Activity
         repeat(4) {
             when (ctx) {
                 is Activity -> return (ctx as Activity).window.decorView
@@ -417,10 +376,5 @@ class VariableBlurView @JvmOverloads constructor(
         }
 
         return null
-    }
-
-    companion object {
-        private const val GRADIENT_TYPE_LINEAR = 0
-        private const val GRADIENT_TYPE_RADIAL = 1
     }
 }

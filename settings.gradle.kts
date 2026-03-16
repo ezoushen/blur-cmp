@@ -14,6 +14,5 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "blur-cmp"
-include(":blur-core")
 include(":blur-cmp")
 include(":demoApp")

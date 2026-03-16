@@ -40,7 +40,8 @@ kotlin {
         }
 
         androidMain.dependencies {
-            implementation(project(":blur-core"))
+            implementation(libs.androidx.core.ktx)
+            implementation(libs.androidx.appcompat)
             implementation(libs.androidx.annotation)
         }
 
