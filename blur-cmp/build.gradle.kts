@@ -1,3 +1,5 @@
+import com.vanniktech.maven.publish.KotlinMultiplatform
+import com.vanniktech.maven.publish.SonatypeHost
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -5,16 +7,18 @@ plugins {
     alias(libs.plugins.compose.multiplatform)
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.android.library)
-    `maven-publish`
+    alias(libs.plugins.maven.publish)
 }
 
 group = "io.github.ezoushen"
+version = findProperty("VERSION_NAME")?.toString() ?: "0.1.0"
 
 kotlin {
     androidTarget {
         compilerOptions {
             jvmTarget.set(JvmTarget.JVM_11)
         }
+        publishLibraryVariants("release")
     }
 
     listOf(
@@ -36,7 +40,7 @@ kotlin {
         }
 
         androidMain.dependencies {
-            implementation("io.github.ezoushen:blur-core")
+            implementation(project(":blur-core"))
             implementation(libs.androidx.annotation)
         }
 
@@ -60,36 +64,36 @@ android {
     }
 }
 
-afterEvaluate {
-    publishing {
-        publications.withType<MavenPublication> {
-            groupId = findProperty("GROUP")?.toString() ?: "io.github.ezoushen"
-            version = findProperty("VERSION_NAME")?.toString() ?: "0.1.0"
+mavenPublishing {
+    configure(KotlinMultiplatform(javadocJar = com.vanniktech.maven.publish.JavadocJar.Empty()))
+    publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL)
+    signAllPublications()
 
-            pom {
-                name.set("blur-cmp")
-                description.set("Compose Multiplatform real-time blur overlay for Android and iOS")
-                url.set("https://github.com/ezoushen/blur-cmp")
-                licenses {
-                    license {
-                        name.set("Apache License 2.0")
-                        url.set("https://www.apache.org/licenses/LICENSE-2.0")
-                    }
-                }
+    pom {
+        name.set("blur-cmp")
+        description.set("Compose Multiplatform real-time blur overlay for Android and iOS")
+        url.set("https://github.com/ezoushen/blur-cmp")
+        inceptionYear.set("2026")
+
+        licenses {
+            license {
+                name.set("Apache License 2.0")
+                url.set("https://www.apache.org/licenses/LICENSE-2.0")
             }
         }
 
-        repositories {
-            maven {
-                name = "GitHubPackages"
-                url = uri("https://maven.pkg.github.com/ezoushen/blur-cmp")
-                credentials {
-                    username = System.getenv("GITHUB_ACTOR")
-                        ?: findProperty("gpr.user")?.toString()
-                    password = System.getenv("GITHUB_TOKEN")
-                        ?: findProperty("gpr.token")?.toString()
-                }
+        developers {
+            developer {
+                id.set("ezoushen")
+                name.set("ezoushen")
+                url.set("https://github.com/ezoushen")
             }
+        }
+
+        scm {
+            connection.set("scm:git:github.com/ezoushen/blur-cmp.git")
+            developerConnection.set("scm:git:ssh://github.com/ezoushen/blur-cmp.git")
+            url.set("https://github.com/ezoushen/blur-cmp/tree/main")
         }
     }
 }

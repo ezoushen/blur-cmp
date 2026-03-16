@@ -13,13 +13,7 @@ dependencyResolutionManagement {
     }
 }
 
-// Reference blur-android for blur-core dependency
-includeBuild("../blur-android") {
-    dependencySubstitution {
-        substitute(module("io.github.ezoushen:blur-core")).using(project(":blur-core"))
-    }
-}
-
 rootProject.name = "blur-cmp"
+include(":blur-core")
 include(":blur-cmp")
 include(":demoApp")

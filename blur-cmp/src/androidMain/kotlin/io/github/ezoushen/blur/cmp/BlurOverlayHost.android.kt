@@ -17,8 +17,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
-import com.example.blur.view.BlurView
-import com.example.blur.view.VariableBlurView
+import io.github.ezoushen.blur.view.BlurView
+import io.github.ezoushen.blur.view.VariableBlurView
 
 /**
  * Android BlurOverlayHost using blur-core's native BlurView/VariableBlurView.

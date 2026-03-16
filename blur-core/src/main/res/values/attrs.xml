@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <declare-styleable name="BlurView">
+        <!-- Blur radius in dp (default 16) -->
+        <attr name="blurRadius" format="dimension" />
+
+        <!-- Downsample factor (higher = faster but lower quality, default 4) -->
+        <attr name="blurDownsample" format="float" />
+
+        <!-- Overlay color with alpha (e.g., #80FFFFFF for semi-transparent white) -->
+        <attr name="blurOverlayColor" format="color" />
+
+        <!-- Whether blur is enabled (default true) -->
+        <attr name="blurEnabled" format="boolean" />
+
+        <!-- Whether blur updates in real-time (default true). Set to false to save energy. -->
+        <attr name="blurIsLive" format="boolean" />
+    </declare-styleable>
+
+    <declare-styleable name="VariableBlurView">
+        <!-- Gradient type: linear (0), radial (1) -->
+        <attr name="gradientType" format="enum">
+            <enum name="linear" value="0" />
+            <enum name="radial" value="1" />
+        </attr>
+
+        <!-- Blur radius at start of gradient (default 0) -->
+        <attr name="startRadius" format="dimension" />
+
+        <!-- Blur radius at end of gradient (default 16dp) -->
+        <attr name="endRadius" format="dimension" />
+
+        <!-- Gradient center X position (0-1, default 0.5) -->
+        <attr name="gradientCenterX" format="float" />
+
+        <!-- Gradient center Y position (0-1, default 0.5) -->
+        <attr name="gradientCenterY" format="float" />
+
+        <!-- Gradient radius for radial type (0-1, default 1) -->
+        <attr name="gradientRadius" format="float" />
+
+        <!-- Gradient angle for linear type in degrees (default 90 = top to bottom) -->
+        <attr name="gradientAngle" format="float" />
+
+        <!-- Downsample factor (higher = faster but lower quality, default 4) -->
+        <attr name="blurDownsample" />
+
+        <!-- Overlay color with alpha -->
+        <attr name="blurOverlayColor" />
+
+        <!-- Whether blur is enabled (default true) -->
+        <attr name="blurEnabled" />
+
+        <!-- Whether blur updates in real-time (default true). Set to false to save energy. -->
+        <attr name="blurIsLive" />
+    </declare-styleable>
+
+</resources>

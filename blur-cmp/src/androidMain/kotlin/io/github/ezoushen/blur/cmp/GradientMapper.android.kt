@@ -1,8 +1,8 @@
 package io.github.ezoushen.blur.cmp
 
 import androidx.compose.ui.geometry.Offset
-import com.example.blur.BlurConfig
-import com.example.blur.BlurGradient
+import io.github.ezoushen.blur.BlurConfig
+import io.github.ezoushen.blur.BlurGradient
 
 internal object AndroidGradientMapper {
 
