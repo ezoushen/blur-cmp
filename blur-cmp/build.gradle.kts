@@ -86,12 +86,13 @@ mavenPublishing {
             developer {
                 id.set("ezoushen")
                 name.set("ezoushen")
+                email.set("ezoushen@gmail.com")
                 url.set("https://github.com/ezoushen")
             }
         }
 
         scm {
-            connection.set("scm:git:github.com/ezoushen/blur-cmp.git")
+            connection.set("scm:git:git://github.com/ezoushen/blur-cmp.git")
             developerConnection.set("scm:git:ssh://github.com/ezoushen/blur-cmp.git")
             url.set("https://github.com/ezoushen/blur-cmp/tree/main")
         }
