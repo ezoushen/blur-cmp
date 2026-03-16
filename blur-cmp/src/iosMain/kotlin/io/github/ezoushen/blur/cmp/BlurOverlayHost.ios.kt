@@ -177,8 +177,7 @@ internal class IosBlurState {
         CATransaction.setDisableActions(true)
 
         // Apply blur filter
-        // TODO: Variable blur filter creation needs debugging
-        val gradient: BlurGradientType? = null // TEMP: force uniform blur for testing
+        val gradient = config.gradient
         if (gradient != null && IosBackdropLayerProvider.isValidForVariableBlur) {
             val mask = maskCache.getOrCreate(gradient)
             if (mask != null) {

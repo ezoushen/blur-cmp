@@ -158,16 +158,35 @@ internal object IosBackdropLayerProvider {
 
         return try {
             val selector = NSSelectorFromString("filterWithType:")
-            // ObjC class objects are NSObject at runtime, so this cast works for message dispatch.
-            // filterWithType: is not in the new/copy/alloc family, so performSelector's
-            // default +0 memory handling is correct.
             val result = (cls as NSObject).performSelector(selector, withObject = "variableBlur")
-            val filter = result as? NSObject ?: return null
+            val filter = result as? NSObject
+            if (filter == null) {
+                platform.Foundation.NSLog("[BackdropLayerProvider] filterWithType: returned null")
+                return null
+            }
+            platform.Foundation.NSLog("[BackdropLayerProvider] Created variableBlur filter: ${NSStringFromClass(object_getClass(filter)!!)}")
+
             filter.setValue(radius, forKey = "inputRadius")
-            filter.setValue(maskImage, forKey = "inputMaskImage")
+            platform.Foundation.NSLog("[BackdropLayerProvider] Set inputRadius=$radius")
+
+            // CGImageRef needs to be bridged to an ObjC object for KVC.
+            // In Swift, CGImage toll-free bridges. In K/N, we need to use
+            // CFBridgingRetain to convert the CF type to a retained NSObject reference.
+            val maskAsId = kotlinx.cinterop.interpretObjCPointerOrNull<platform.darwin.NSObject>(
+                maskImage.rawValue
+            )
+            if (maskAsId != null) {
+                filter.setValue(maskAsId, forKey = "inputMaskImage")
+                platform.Foundation.NSLog("[BackdropLayerProvider] Set inputMaskImage via interpretObjCPointer")
+            } else {
+                platform.Foundation.NSLog("[BackdropLayerProvider] Failed to bridge CGImageRef to NSObject")
+            }
+
             filter.setValue(true, forKey = "inputNormalizeEdges")
+            platform.Foundation.NSLog("[BackdropLayerProvider] Variable blur filter created successfully")
             filter
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            platform.Foundation.NSLog("[BackdropLayerProvider] Exception: ${e.message}")
             null
         }
     }
