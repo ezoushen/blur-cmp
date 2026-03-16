@@ -34,3 +34,41 @@ fun BlurOverlayHost(
     background: @Composable () -> Unit,
     content: @Composable () -> Unit,
 ) = BlurOverlayHost(state = state, modifier = Modifier, background = background, content = content)
+
+/**
+ * A composable that blurs whatever is behind it and renders [content] sharply on top.
+ *
+ * Unlike [BlurOverlayHost], this does not manage its own background. It acts as a
+ * true backdrop blur — place it on top of any content in the view hierarchy, and it
+ * blurs whatever happens to be behind it.
+ *
+ * Architecture per platform:
+ * - **Android**: DecorView capture blurs everything drawn behind the BlurView's screen position.
+ * - **iOS**: CABackdropLayer captures live window content below it at the GPU compositor level.
+ *
+ * Usage:
+ * ```kotlin
+ * Box(Modifier.fillMaxSize()) {
+ *     MyScene()  // this gets blurred
+ *
+ *     BlurOverlay(state = blurState) {
+ *         Controls()  // this stays sharp on top
+ *     }
+ * }
+ * ```
+ *
+ * @param state Controls blur configuration at runtime. Create via [rememberBlurOverlayState].
+ * @param modifier Modifier applied to the blur overlay container.
+ * @param content Composable drawn sharp on top of the blur effect.
+ */
+@Composable
+fun BlurOverlay(
+    state: BlurOverlayState,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) = BlurOverlayHost(
+    state = state,
+    modifier = modifier,
+    background = {},
+    content = content,
+)

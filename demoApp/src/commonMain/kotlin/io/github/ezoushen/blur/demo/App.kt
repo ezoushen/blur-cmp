@@ -35,7 +35,7 @@ import androidx.compose.ui.unit.sp
 import io.github.ezoushen.blur.cmp.BlurBlendMode
 import io.github.ezoushen.blur.cmp.BlurGradientType
 import io.github.ezoushen.blur.cmp.BlurOverlayConfig
-import io.github.ezoushen.blur.cmp.BlurOverlayHost
+import io.github.ezoushen.blur.cmp.BlurOverlay
 import io.github.ezoushen.blur.cmp.rememberBlurOverlayState
 import io.github.ezoushen.blur.cmp.withTint
 
@@ -65,7 +65,7 @@ private enum class BlurBlendModeOption(val label: String, val blendMode: BlurBle
 
 @Composable
 fun BlurCmpDemoApp() {
-    var mode by remember { mutableStateOf(DemoMode.Uniform) }
+    var mode by remember { mutableStateOf(DemoMode.Variable) }
 
     when (mode) {
         DemoMode.Uniform -> UniformBlurDemo(
@@ -236,55 +236,55 @@ private fun UniformBlurDemo(
     ).withTint(Color.White.copy(alpha = tintAlpha))
     state.isEnabled = isEnabled
 
-    BlurOverlayHost(
-        state = state,
-        modifier = Modifier.fillMaxSize(),
-        background = { AnimatedBackground(modifier = Modifier.fillMaxSize()) },
-    ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            Spacer(Modifier.height(48.dp))
-            ModeChips(selected = selectedMode, onSelect = onModeChange)
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Background — NOT managed by blur, placed independently
+        AnimatedBackground(modifier = Modifier.fillMaxSize())
 
-            // Content area
-            Box(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                contentAlignment = Alignment.Center,
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    BasicText("Uniform Blur", style = textTitle)
-                    Spacer(Modifier.height(8.dp))
-                    BasicText("Blend: ${blendModeOption.label}", style = textWhite)
-                }
-            }
+        // Blur overlay — blurs whatever is behind it
+        BlurOverlay(state = state, modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Spacer(Modifier.height(48.dp))
+                ModeChips(selected = selectedMode, onSelect = onModeChange)
 
-            // Controls
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color.Black.copy(alpha = 0.6f))
-                    .padding(vertical = 8.dp)
-                    .verticalScroll(rememberScrollState()),
-            ) {
-                LabeledSlider("Radius", radius, { radius = it }, 0f..80f)
-                LabeledSlider("Tint Alpha", tintAlpha, { tintAlpha = it }, 0f..1f)
-
-                Spacer(Modifier.height(8.dp))
-                FlowRow(
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                Box(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    BlurBlendModeOption.entries.forEach { option ->
-                        Chip(
-                            label = option.label,
-                            isSelected = blendModeOption == option,
-                            onClick = { blendModeOption = option },
-                        )
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        BasicText("Uniform Blur", style = textTitle)
+                        Spacer(Modifier.height(8.dp))
+                        BasicText("Blend: ${blendModeOption.label}", style = textWhite)
                     }
                 }
-                Spacer(Modifier.height(8.dp))
-                ToggleRow("Blur Enabled", isEnabled) { isEnabled = it }
-                Spacer(Modifier.height(16.dp))
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.Black.copy(alpha = 0.6f))
+                        .padding(vertical = 8.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    LabeledSlider("Radius", radius, { radius = it }, 0f..80f)
+                    LabeledSlider("Tint Alpha", tintAlpha, { tintAlpha = it }, 0f..1f)
+
+                    Spacer(Modifier.height(8.dp))
+                    FlowRow(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        BlurBlendModeOption.entries.forEach { option ->
+                            Chip(
+                                label = option.label,
+                                isSelected = blendModeOption == option,
+                                onClick = { blendModeOption = option },
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    ToggleRow("Blur Enabled", isEnabled) { isEnabled = it }
+                    Spacer(Modifier.height(16.dp))
+                }
             }
         }
     }
@@ -340,50 +340,50 @@ private fun VariableBlurDemo(
 
     state.config = BlurOverlayConfig(radius = radius, gradient = gradient)
 
-    BlurOverlayHost(
-        state = state,
-        modifier = Modifier.fillMaxSize(),
-        background = { AnimatedBackground(modifier = Modifier.fillMaxSize()) },
-    ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            Spacer(Modifier.height(48.dp))
-            ModeChips(selected = selectedMode, onSelect = onModeChange)
+    Box(modifier = Modifier.fillMaxSize()) {
+        AnimatedBackground(modifier = Modifier.fillMaxSize())
 
-            Box(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                contentAlignment = Alignment.Center,
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    BasicText("Variable Blur", style = textTitle)
-                    Spacer(Modifier.height(8.dp))
-                    BasicText(gradientStyle.label, style = textWhite)
-                }
-            }
+        BlurOverlay(state = state, modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Spacer(Modifier.height(48.dp))
+                ModeChips(selected = selectedMode, onSelect = onModeChange)
 
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color.Black.copy(alpha = 0.6f))
-                    .padding(vertical = 8.dp),
-            ) {
-                FlowRow(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                Box(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    GradientStyle.entries.forEach { style ->
-                        Chip(
-                            label = style.label,
-                            isSelected = gradientStyle == style,
-                            onClick = { gradientStyle = style },
-                        )
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        BasicText("Variable Blur", style = textTitle)
+                        Spacer(Modifier.height(8.dp))
+                        BasicText(gradientStyle.label, style = textWhite)
                     }
                 }
-                LabeledSlider("Radius", radius, { radius = it }, 0f..80f)
-                if (gradientStyle == GradientStyle.Spotlight) {
-                    LabeledSlider("Spotlight Radius", spotlightRadius, { spotlightRadius = it }, 0.1f..1f)
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.Black.copy(alpha = 0.6f))
+                        .padding(vertical = 8.dp),
+                ) {
+                    FlowRow(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        GradientStyle.entries.forEach { style ->
+                            Chip(
+                                label = style.label,
+                                isSelected = gradientStyle == style,
+                                onClick = { gradientStyle = style },
+                            )
+                        }
+                    }
+                    LabeledSlider("Radius", radius, { radius = it }, 0f..80f)
+                    if (gradientStyle == GradientStyle.Spotlight) {
+                        LabeledSlider("Spotlight Radius", spotlightRadius, { spotlightRadius = it }, 0.1f..1f)
+                    }
+                    Spacer(Modifier.height(16.dp))
                 }
-                Spacer(Modifier.height(16.dp))
             }
         }
     }
@@ -414,67 +414,65 @@ private fun ColorDodgeDemo(
         tintBlendMode = blendMode,
     ).withTint(Color.White.copy(alpha = tintAlpha))
 
-    BlurOverlayHost(
-        state = state,
-        modifier = Modifier.fillMaxSize(),
-        background = { AnimatedBackground(modifier = Modifier.fillMaxSize()) },
-    ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            Spacer(Modifier.height(48.dp))
-            ModeChips(selected = selectedMode, onSelect = onModeChange)
+    Box(modifier = Modifier.fillMaxSize()) {
+        AnimatedBackground(modifier = Modifier.fillMaxSize())
 
-            // Content area
-            Box(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                contentAlignment = Alignment.Center,
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.padding(horizontal = 32.dp),
+        BlurOverlay(state = state, modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Spacer(Modifier.height(48.dp))
+                ModeChips(selected = selectedMode, onSelect = onModeChange)
+
+                Box(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    BasicText("Color Dodge", style = textTitle)
-                    Spacer(Modifier.height(12.dp))
-                    BasicText(
-                        "Brightens the background to reflect the tint color. " +
-                            "Lighter areas become brighter.",
-                        style = textWhite,
-                    )
-                    Spacer(Modifier.height(24.dp))
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(horizontal = 32.dp),
+                    ) {
+                        BasicText("Color Dodge", style = textTitle)
+                        Spacer(Modifier.height(12.dp))
+                        BasicText(
+                            "Brightens the background to reflect the tint color. " +
+                                "Lighter areas become brighter.",
+                            style = textWhite,
+                        )
+                        Spacer(Modifier.height(24.dp))
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(if (!useDodge) Color.White.copy(alpha = 0.3f) else Color.White.copy(alpha = 0.1f))
-                                .clickable { useDodge = false }
-                                .padding(horizontal = 20.dp, vertical = 12.dp),
-                        ) {
-                            BasicText("NORMAL", style = if (!useDodge) textWhiteBold else textWhite)
-                        }
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(if (useDodge) Color.White.copy(alpha = 0.3f) else Color.White.copy(alpha = 0.1f))
-                                .clickable { useDodge = true }
-                                .padding(horizontal = 20.dp, vertical = 12.dp),
-                        ) {
-                            BasicText("DODGE", style = if (useDodge) textWhiteBold else textWhite)
+                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (!useDodge) Color.White.copy(alpha = 0.3f) else Color.White.copy(alpha = 0.1f))
+                                    .clickable { useDodge = false }
+                                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                            ) {
+                                BasicText("NORMAL", style = if (!useDodge) textWhiteBold else textWhite)
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (useDodge) Color.White.copy(alpha = 0.3f) else Color.White.copy(alpha = 0.1f))
+                                    .clickable { useDodge = true }
+                                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                            ) {
+                                BasicText("DODGE", style = if (useDodge) textWhiteBold else textWhite)
+                            }
                         }
                     }
                 }
-            }
 
-            // Controls
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color.Black.copy(alpha = 0.6f))
-                    .padding(vertical = 8.dp),
-            ) {
-                LabeledSlider("Radius", radius, { radius = it }, 0f..80f)
-                LabeledSlider("Tint Alpha", tintAlpha, { tintAlpha = it }, 0f..1f)
-                ToggleRow("Normal <-> ColorDodge", useDodge) { useDodge = it }
-                Spacer(Modifier.height(16.dp))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.Black.copy(alpha = 0.6f))
+                        .padding(vertical = 8.dp),
+                ) {
+                    LabeledSlider("Radius", radius, { radius = it }, 0f..80f)
+                    LabeledSlider("Tint Alpha", tintAlpha, { tintAlpha = it }, 0f..1f)
+                    ToggleRow("Normal <-> ColorDodge", useDodge) { useDodge = it }
+                    Spacer(Modifier.height(16.dp))
+                }
             }
         }
     }
