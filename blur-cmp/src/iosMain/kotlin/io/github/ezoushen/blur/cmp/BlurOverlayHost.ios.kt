@@ -139,10 +139,6 @@ internal class IosBlurState {
     private val maskCache = IosGradientMaskCache()
     private var isBeforeBlurActive = false
 
-    // Reusable NSMutableArray to avoid per-frame allocation
-    private val filterArray = platform.Foundation.NSMutableArray(capacity = 1u)
-
-    // Public only for cleanup from DisposableEffect
     var contentWindow: UIWindow? = null
 
     fun setupInView(parentView: UIView, initialConfig: BlurOverlayConfig) {
@@ -221,14 +217,10 @@ internal class IosBlurState {
         CATransaction.commit()
     }
 
-    /** Reuse a single NSMutableArray to avoid per-frame allocation. */
     private fun setFilterOnLayer(layer: CALayer, filter: platform.darwin.NSObject) {
-        // Remove existing objects by replacing with the new filter
-        while (filterArray.count().toInt() > 0) {
-            filterArray.removeLastObject()
-        }
-        filterArray.addObject(filter)
-        layer.setValue(filterArray, forKey = "filters")
+        val arr = platform.Foundation.NSMutableArray()
+        arr.addObject(filter)
+        layer.setValue(arr, forKey = "filters")
     }
 
     private fun applyTint(config: BlurOverlayConfig) {
