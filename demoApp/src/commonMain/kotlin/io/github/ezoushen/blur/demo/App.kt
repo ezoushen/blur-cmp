@@ -292,18 +292,46 @@ private fun UniformBlurDemo(
 
 // ── Mode 2: Variable Blur ───────────────────────────────────────────────
 
+private enum class GradientStyle(val label: String) {
+    TopToBottom("Top→Bottom"),
+    BottomToTop("Bottom→Top"),
+    LeftToRight("Left→Right"),
+    RightToLeft("Right→Left"),
+    Spotlight("Spotlight"),
+}
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun VariableBlurDemo(
     selectedMode: DemoMode,
     onModeChange: (DemoMode) -> Unit,
 ) {
     var radius by remember { mutableStateOf(30f) }
-    var useSpotlight by remember { mutableStateOf(false) }
+    var gradientStyle by remember { mutableStateOf(GradientStyle.TopToBottom) }
+    var spotlightRadius by remember { mutableStateOf(0.4f) }
 
-    val gradient = if (useSpotlight) {
-        BlurGradientType.spotlight()
-    } else {
-        BlurGradientType.verticalTopToBottom()
+    val gradient = when (gradientStyle) {
+        GradientStyle.TopToBottom -> BlurGradientType.Linear(
+            startX = 0.5f, startY = 0f, endX = 0.5f, endY = 1f,
+            startIntensity = 1f, endIntensity = 0f,
+        )
+        GradientStyle.BottomToTop -> BlurGradientType.Linear(
+            startX = 0.5f, startY = 1f, endX = 0.5f, endY = 0f,
+            startIntensity = 1f, endIntensity = 0f,
+        )
+        GradientStyle.LeftToRight -> BlurGradientType.Linear(
+            startX = 0f, startY = 0.5f, endX = 1f, endY = 0.5f,
+            startIntensity = 1f, endIntensity = 0f,
+        )
+        GradientStyle.RightToLeft -> BlurGradientType.Linear(
+            startX = 1f, startY = 0.5f, endX = 0f, endY = 0.5f,
+            startIntensity = 1f, endIntensity = 0f,
+        )
+        GradientStyle.Spotlight -> BlurGradientType.Radial(
+            centerX = 0.5f, centerY = 0.4f,
+            radius = spotlightRadius,
+            centerIntensity = 0f, edgeIntensity = 1f,
+        )
     }
 
     val state = rememberBlurOverlayState(
@@ -321,7 +349,6 @@ private fun VariableBlurDemo(
             Spacer(Modifier.height(48.dp))
             ModeChips(selected = selectedMode, onSelect = onModeChange)
 
-            // Content area
             Box(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 contentAlignment = Alignment.Center,
@@ -329,22 +356,33 @@ private fun VariableBlurDemo(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     BasicText("Variable Blur", style = textTitle)
                     Spacer(Modifier.height(8.dp))
-                    BasicText(
-                        if (useSpotlight) "Spotlight" else "Vertical Top-to-Bottom",
-                        style = textWhite,
-                    )
+                    BasicText(gradientStyle.label, style = textWhite)
                 }
             }
 
-            // Controls
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(Color.Black.copy(alpha = 0.6f))
                     .padding(vertical = 8.dp),
             ) {
+                FlowRow(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    GradientStyle.entries.forEach { style ->
+                        Chip(
+                            label = style.label,
+                            isSelected = gradientStyle == style,
+                            onClick = { gradientStyle = style },
+                        )
+                    }
+                }
                 LabeledSlider("Radius", radius, { radius = it }, 0f..80f)
-                ToggleRow("Spotlight Mode", useSpotlight) { useSpotlight = it }
+                if (gradientStyle == GradientStyle.Spotlight) {
+                    LabeledSlider("Spotlight Radius", spotlightRadius, { spotlightRadius = it }, 0.1f..1f)
+                }
                 Spacer(Modifier.height(16.dp))
             }
         }
