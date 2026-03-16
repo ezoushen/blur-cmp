@@ -3,7 +3,6 @@ package io.github.ezoushen.blur.cmp
 import kotlinx.cinterop.BetaInteropApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.CoreGraphics.CGImageRef
-import platform.Foundation.NSClassFromString
 import platform.Foundation.NSNumber
 import platform.Foundation.NSSelectorFromString
 import platform.Foundation.NSStringFromClass
@@ -15,29 +14,31 @@ import platform.UIKit.UIBlurEffectStyle
 import platform.UIKit.UIView
 import platform.UIKit.UIVisualEffectView
 import platform.darwin.NSObject
+import platform.darwin.NSObjectMeta
 import platform.objc.object_getClass
 
 /**
  * Extracts CABackdropLayer and CAFilter capabilities from UIVisualEffectView internals.
- * Mirrors the Swift BackdropLayerProvider from BlurViewCore.swift, implemented entirely
- * in Kotlin/Native using KVC (Key-Value Coding) to avoid Swift interop requirements.
+ * Mirrors the Swift BackdropLayerProvider from BlurViewCore.swift.
  *
- * This approach is based on Flutter's iOS PlatformView BackdropFilter strategy:
- * extract blur filter capabilities from UIVisualEffectView once, then reuse them
- * to create custom backdrop blur layers with continuous radius control.
+ * Uses NSObjectMeta for correct class method dispatch in Kotlin/Native,
+ * matching Swift's metatype-based approach (layerClass.init()).
  */
 @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
 internal object IosBackdropLayerProvider {
 
     private var preparedOnce = false
-    private var backdropLayerClassName: String? = null
+
+    // Store actual class references (like Swift's AnyClass?) instead of string names
+    private var backdropLayerClass: NSObjectMeta? = null
+    private var filterClass: NSObjectMeta? = null
     private var gaussianBlurFilterTemplate: NSObject? = null
-    private var filterClassName: String? = null
     private var indexOfBackdropView: Int = -1
     private var indexOfVisualEffectSubview: Int = -1
 
     /**
      * Extract internal structure from UIVisualEffectView (called once, cached).
+     * Matches Swift BackdropLayerProvider.prepareOnce() logic exactly.
      */
     fun prepareOnce() {
         if (preparedOnce) return
@@ -54,11 +55,15 @@ internal object IosBackdropLayerProvider {
             val objcClass = object_getClass(view) ?: continue
             val className = NSStringFromClass(objcClass)
 
-            if (className.contains("BackdropView")) {
+            platform.Foundation.NSLog("[BackdropLayerProvider] subview[$i] class: $className")
+
+            if (className.hasSuffix("BackdropView")) {
                 indexOfBackdropView = i
+                // Store the layer's class as NSObjectMeta for direct .new() calls
                 val layerObjcClass = object_getClass(view.layer)
                 if (layerObjcClass != null) {
-                    backdropLayerClassName = NSStringFromClass(layerObjcClass)
+                    backdropLayerClass = layerObjcClass as? NSObjectMeta
+                    platform.Foundation.NSLog("[BackdropLayerProvider] Found backdrop layer class: ${NSStringFromClass(layerObjcClass)}")
                 }
 
                 // Extract gaussian blur filter from the backdrop layer
@@ -74,14 +79,15 @@ internal object IosBackdropLayerProvider {
                                 gaussianBlurFilterTemplate = nsFilter
                                 val filterObjcClass = object_getClass(nsFilter)
                                 if (filterObjcClass != null) {
-                                    filterClassName = NSStringFromClass(filterObjcClass)
+                                    filterClass = filterObjcClass as? NSObjectMeta
                                 }
+                                platform.Foundation.NSLog("[BackdropLayerProvider] Found gaussian blur filter, class: ${NSStringFromClass(object_getClass(nsFilter)!!)}")
                                 break
                             }
                         }
                     }
                 }
-            } else if (className.contains("Subview") && !className.contains("Content")) {
+            } else if (className.hasSuffix("Subview") && !className.contains("Content")) {
                 indexOfVisualEffectSubview = i
             }
         }
@@ -100,22 +106,21 @@ internal object IosBackdropLayerProvider {
     val isValidForVariableBlur: Boolean
         get() {
             prepareOnce()
-            return backdropLayerClassName != null && filterClassName != null
+            return backdropLayerClass != null && filterClass != null
         }
 
     /**
      * Create a new CABackdropLayer instance.
-     * Returns null if extraction failed.
+     * Uses NSObjectMeta.new() for correct class method dispatch,
+     * matching Swift's `layerClass.init()` pattern.
      */
     fun createBackdropLayer(): CALayer? {
         prepareOnce()
-        val className = backdropLayerClassName ?: return null
+        val cls = backdropLayerClass ?: return null
         return try {
-            val cls = NSClassFromString(className) ?: return null
-            val selector = NSSelectorFromString("new")
-            @Suppress("UNCHECKED_CAST")
-            val result = (cls as NSObject).performSelector(selector)
-            result as? CALayer
+            // NSObjectMeta.new() correctly dispatches +[CABackdropLayer new]
+            // K/N handles ARC naming convention for "new" family methods
+            cls.new() as? CALayer
         } catch (_: Exception) {
             null
         }
@@ -123,15 +128,16 @@ internal object IosBackdropLayerProvider {
 
     /**
      * Create a gaussian blur filter with the specified radius.
-     * Copies the template filter extracted from UIVisualEffectView.
+     * Uses NSObject.copy() which is correctly annotated @ReturnsRetained in K/N.
      */
     fun createGaussianBlurFilter(radius: Double): NSObject? {
         prepareOnce()
         val template = gaussianBlurFilterTemplate ?: return null
 
         return try {
-            val copySelector = NSSelectorFromString("copy")
-            val copied = template.performSelector(copySelector) as? NSObject ?: return null
+            // NSObject.copy() has correct @ReturnsRetained annotation in K/N,
+            // unlike performSelector("copy") which would double-retain
+            val copied = template.copy() as? NSObject ?: return null
             copied.setValue(radius, forKey = "inputRadius")
             copied.setValue(true, forKey = "inputNormalizeEdges")
             copied
@@ -142,16 +148,19 @@ internal object IosBackdropLayerProvider {
 
     /**
      * Create a variable blur filter with the specified radius and mask image.
-     * Uses the CAFilter class extracted from UIVisualEffectView.
+     * Dispatches +[CAFilter filterWithType:] as a class method.
+     * filterWithType: returns +0 (autoreleased), so performSelector handling is correct.
      */
+    @Suppress("UNCHECKED_CAST")
     fun createVariableBlurFilter(radius: Double, maskImage: CGImageRef): NSObject? {
         prepareOnce()
-        val className = filterClassName ?: return null
+        val cls = filterClass ?: return null
 
         return try {
-            val cls = NSClassFromString(className) ?: return null
             val selector = NSSelectorFromString("filterWithType:")
-            @Suppress("UNCHECKED_CAST")
+            // ObjC class objects are NSObject at runtime, so this cast works for message dispatch.
+            // filterWithType: is not in the new/copy/alloc family, so performSelector's
+            // default +0 memory handling is correct.
             val result = (cls as NSObject).performSelector(selector, withObject = "variableBlur")
             val filter = result as? NSObject ?: return null
             filter.setValue(radius, forKey = "inputRadius")
@@ -162,4 +171,17 @@ internal object IosBackdropLayerProvider {
             null
         }
     }
+
+    /** Reset preparation state (for testing). */
+    fun resetPreparation() {
+        preparedOnce = false
+        indexOfBackdropView = -1
+        indexOfVisualEffectSubview = -1
+        gaussianBlurFilterTemplate = null
+        filterClass = null
+        backdropLayerClass = null
+    }
 }
+
+// Extension to match Swift's hasSuffix
+private fun String.hasSuffix(suffix: String): Boolean = endsWith(suffix)
