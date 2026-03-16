@@ -4,21 +4,24 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 
 /**
- * A blur overlay host. The blur layer renders beneath [content] inside a [Box],
- * blurring everything behind it in the view hierarchy. [content] is drawn on top
- * of the blur.
+ * A composable that blurs its [background] and renders [content] sharply on top.
  *
- * The native blur view is embedded inline in the Compose tree via [AndroidView] /
- * [UIKitView], so content behind this composable in the z-order will be blurred.
+ * Architecture per platform:
+ * - **iOS**: Compose([background]) → UIKitView(CABackdropLayer) → Compose([content])
+ *   The CABackdropLayer captures the Metal-rendered background and applies real-time blur.
+ * - **Android**: Compose([background] + RenderEffect blur) → Compose([content])
+ *   GPU-accelerated blur via graphicsLayer RenderEffect (API 31+).
  *
  * @param state Controls blur configuration at runtime. Create via [rememberBlurOverlayState].
- * @param modifier Modifier applied to the outer [Box] container.
- * @param content Compose UI drawn on top of the blurred background.
+ * @param modifier Modifier applied to the outer container.
+ * @param background Composable to blur (e.g., animated scene, image, video).
+ * @param content Composable drawn sharp on top of the blurred background (e.g., controls, text).
  */
 @Composable
 expect fun BlurOverlayHost(
     state: BlurOverlayState,
     modifier: Modifier,
+    background: @Composable () -> Unit,
     content: @Composable () -> Unit,
 )
 
@@ -28,5 +31,6 @@ expect fun BlurOverlayHost(
 @Composable
 fun BlurOverlayHost(
     state: BlurOverlayState,
+    background: @Composable () -> Unit,
     content: @Composable () -> Unit,
-) = BlurOverlayHost(state = state, modifier = Modifier, content = content)
+) = BlurOverlayHost(state = state, modifier = Modifier, background = background, content = content)

@@ -1,489 +1,82 @@
 package io.github.ezoushen.blur.cmp
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.interop.UIKitView
-import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.readValue
-import platform.CoreGraphics.CGRectZero
-import platform.Foundation.NSUUID
-import platform.Foundation.setValue
-import platform.QuartzCore.CALayer
-import platform.QuartzCore.CATransaction
-import platform.QuartzCore.kCAGravityResizeAspectFill
-import platform.UIKit.UIBlurEffect
-import platform.UIKit.UIBlurEffectStyle
-import platform.UIKit.UIColor
-import platform.UIKit.UIView
-import platform.UIKit.UIViewAutoresizingFlexibleHeight
-import platform.UIKit.UIViewAutoresizingFlexibleWidth
-import platform.UIKit.UIVisualEffectView
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.BlendMode as ComposeBlendMode
+import androidx.compose.ui.unit.dp
 
-@OptIn(ExperimentalForeignApi::class)
+/**
+ * iOS implementation using Compose's Modifier.blur() (Skia-based).
+ *
+ * CMP renders via Skia on iOS, so Modifier.blur() uses Skia's ImageFilter
+ * for GPU-accelerated blur. This works identically to the Android implementation.
+ *
+ * Future: replace with CABackdropLayer via UIKitView for true compositor-level
+ * backdrop blur with native performance and blend mode support.
+ */
 @Composable
 actual fun BlurOverlayHost(
     state: BlurOverlayState,
     modifier: Modifier,
+    background: @Composable () -> Unit,
     content: @Composable () -> Unit,
 ) {
-    if (!state.isEnabled) {
-        content()
-        return
-    }
-
     val config = state.config
 
     Box(modifier = modifier) {
-        // Native blur view fills parent, drawn first (behind content)
-        UIKitView(
-            factory = { createNativeBlurView(config) },
-            modifier = Modifier.matchParentSize(),
-            update = { view -> updateNativeBlurView(view, config) },
-        )
+        if (state.isEnabled && config.radius > 0f) {
+            val hasTint = config.tintColorValue != 0L
+            val isNonNormalBlend = config.tintBlendMode != BlurBlendMode.Normal
+            val blurRadius = config.radius.dp
 
-        // Content drawn on top of blur
+            if (hasTint && isNonNormalBlend) {
+                // COLOR DODGE ORDER: background → tint(dodge) → blur
+                Box(modifier = Modifier.fillMaxSize().blur(blurRadius)) {
+                    background()
+                    val tintColor = config.tintColor
+                    if (tintColor != null) {
+                        Canvas(modifier = Modifier.matchParentSize()) {
+                            drawRect(color = tintColor, blendMode = mapBlendMode(config.tintBlendMode))
+                        }
+                    }
+                }
+            } else {
+                // NORMAL ORDER: blur background, then tint on top
+                Box(modifier = Modifier.fillMaxSize().blur(blurRadius)) {
+                    background()
+                }
+                if (hasTint) {
+                    val tintColor = config.tintColor
+                    if (tintColor != null) {
+                        Canvas(modifier = Modifier.matchParentSize()) {
+                            drawRect(color = tintColor, blendMode = ComposeBlendMode.SrcOver)
+                        }
+                    }
+                }
+            }
+        } else {
+            background()
+        }
+
         content()
     }
 }
 
-// ---------------------------------------------------------------------------
-// Native blur view using CABackdropLayer (continuous radius, variable blur,
-// all 12 blend modes). Falls back to UIVisualEffectView if extraction fails.
-// ---------------------------------------------------------------------------
-
-/**
- * Blend order determines how tint color is composited relative to blur.
- *
- * - AFTER_BLUR: Normal blend mode — simple alpha tint on top of blurred content.
- * - BEFORE_BLUR: Non-Normal blend modes — tint is composited against raw backdrop
- *   first, then the combined result is blurred.
- */
-private enum class BlendOrder { AFTER_BLUR, BEFORE_BLUR }
-
-/**
- * Container UIView that manages the two-backdrop-layer hierarchy for correct
- * blend mode compositing.
- *
- * **afterBlur** (Normal blend mode):
- * ```
- * view.layer
- *   ├─ mainBackdropLayer (gaussianBlur filter, captures & blurs background)
- *   └─ afterBlurTintLayer (solid backgroundColor, no compositingFilter)
- * ```
- *
- * **beforeBlur** (ColorDodge and all non-Normal blend modes):
- * ```
- * view.layer
- *   ├─ preBlendBackdropLayer (gaussianBlur with radius=0, captures raw background)
- *   │   └─ preBlendTintLayer (backgroundColor + compositingFilter)
- *   └─ mainBackdropLayer (captures the combined result above and applies blur)
- * ```
- */
-@OptIn(ExperimentalForeignApi::class)
-private class RealTimeBlurContainerView(
-    frame: kotlinx.cinterop.CValue<platform.CoreGraphics.CGRect>,
-) : UIView(frame) {
-
-    /** Main blur backdrop layer (present in both blend orders). */
-    var mainBackdropLayer: CALayer? = null
-
-    /** Pre-blend backdrop layer (beforeBlur only): captures raw background. */
-    var preBlendBackdropLayer: CALayer? = null
-
-    /** Tint layer that is a sublayer of preBlendBackdropLayer (beforeBlur only). */
-    var preBlendTintLayer: CALayer? = null
-
-    /** Tint layer that is a sibling of mainBackdropLayer (afterBlur only). */
-    var afterBlurTintLayer: CALayer? = null
-
-    var gradientMaskCache: IosGradientMaskCache? = null
-    var isVariableBlur: Boolean = false
-    var isFallback: Boolean = false
-    var currentBlendOrder: BlendOrder = BlendOrder.AFTER_BLUR
-
-    fun release() {
-        gradientMaskCache?.release()
-        gradientMaskCache = null
-    }
-}
-
-/**
- * Determine the blend order for the given config.
- * Use BEFORE_BLUR when there is a tint color AND a non-Normal blend mode.
- */
-private fun resolveBlendOrder(config: BlurOverlayConfig): BlendOrder {
-    return if (config.tintColorValue != 0L && config.tintBlendMode != BlurBlendMode.Normal) {
-        BlendOrder.BEFORE_BLUR
-    } else {
-        BlendOrder.AFTER_BLUR
-    }
-}
-
-@OptIn(ExperimentalForeignApi::class)
-private fun createNativeBlurView(config: BlurOverlayConfig): UIView {
-    val isVariableBlur = config.gradient != null
-
-    val canUseBackdrop = if (isVariableBlur) {
-        IosBackdropLayerProvider.isValidForVariableBlur
-    } else {
-        IosBackdropLayerProvider.isValidForUniformBlur
-    }
-
-    if (canUseBackdrop) {
-        return createBackdropBlurView(config, isVariableBlur)
-            ?: createFallbackBlurView(config)
-    }
-
-    return createFallbackBlurView(config)
-}
-
-@OptIn(ExperimentalForeignApi::class)
-private fun createBackdropBlurView(
-    config: BlurOverlayConfig,
-    isVariableBlur: Boolean,
-): UIView? {
-    val container = RealTimeBlurContainerView(CGRectZero.readValue())
-    container.backgroundColor = null
-    container.isVariableBlur = isVariableBlur
-
-    if (isVariableBlur) {
-        container.gradientMaskCache = IosGradientMaskCache()
-    }
-
-    val blendOrder = resolveBlendOrder(config)
-    if (!buildLayerHierarchy(container, blendOrder)) return null
-
-    applyConfigToBackdropView(container, config)
-
-    return container
-}
-
-/**
- * Builds the correct layer hierarchy for the given blend order.
- * Returns false if backdrop layer creation fails.
- */
-@OptIn(ExperimentalForeignApi::class)
-private fun buildLayerHierarchy(
-    container: RealTimeBlurContainerView,
-    blendOrder: BlendOrder,
-): Boolean {
-    container.currentBlendOrder = blendOrder
-
-    when (blendOrder) {
-        BlendOrder.AFTER_BLUR -> {
-            // Single backdrop + sibling tint
-            val backdrop = IosBackdropLayerProvider.createBackdropLayer() ?: return false
-            backdrop.setValue(NSUUID().UUIDString, forKey = "groupName")
-            backdrop.setValue(true, forKey = "allowsInPlaceFiltering")
-            container.layer.addSublayer(backdrop)
-            container.mainBackdropLayer = backdrop
-
-            val tintLayer = CALayer()
-            container.layer.addSublayer(tintLayer)
-            container.afterBlurTintLayer = tintLayer
-        }
-
-        BlendOrder.BEFORE_BLUR -> {
-            // Pre-blend backdrop captures raw background (radius=0)
-            val preBlend = IosBackdropLayerProvider.createBackdropLayer() ?: return false
-            preBlend.setValue(NSUUID().UUIDString, forKey = "groupName")
-            preBlend.setValue(true, forKey = "allowsInPlaceFiltering")
-            preBlend.setValue(1.0, forKey = "scale") // full resolution for sharp blend
-            container.layer.addSublayer(preBlend)
-            container.preBlendBackdropLayer = preBlend
-
-            // Tint layer is a SUBLAYER of the pre-blend backdrop
-            val tintLayer = CALayer()
-            preBlend.addSublayer(tintLayer)
-            container.preBlendTintLayer = tintLayer
-
-            // Main backdrop captures the pre-blended result and applies blur
-            val mainBackdrop = IosBackdropLayerProvider.createBackdropLayer() ?: return false
-            mainBackdrop.setValue(NSUUID().UUIDString, forKey = "groupName")
-            mainBackdrop.setValue(true, forKey = "allowsInPlaceFiltering")
-            container.layer.addSublayer(mainBackdrop)
-            container.mainBackdropLayer = mainBackdrop
-        }
-    }
-
-    return true
-}
-
-/**
- * Tears down all backdrop and tint layers from the container.
- */
-@OptIn(ExperimentalForeignApi::class)
-private fun teardownLayerHierarchy(container: RealTimeBlurContainerView) {
-    container.preBlendTintLayer?.removeFromSuperlayer()
-    container.preBlendTintLayer = null
-
-    container.preBlendBackdropLayer?.removeFromSuperlayer()
-    container.preBlendBackdropLayer = null
-
-    container.afterBlurTintLayer?.removeFromSuperlayer()
-    container.afterBlurTintLayer = null
-
-    container.mainBackdropLayer?.removeFromSuperlayer()
-    container.mainBackdropLayer = null
-}
-
-@OptIn(ExperimentalForeignApi::class)
-private fun createFallbackBlurView(config: BlurOverlayConfig): UIView {
-    val container = RealTimeBlurContainerView(CGRectZero.readValue())
-    container.isFallback = true
-
-    val blurStyle = when {
-        config.radius <= 5f -> UIBlurEffectStyle.UIBlurEffectStyleSystemUltraThinMaterial
-        config.radius <= 15f -> UIBlurEffectStyle.UIBlurEffectStyleSystemThinMaterial
-        config.radius <= 30f -> UIBlurEffectStyle.UIBlurEffectStyleSystemMaterial
-        else -> UIBlurEffectStyle.UIBlurEffectStyleSystemThickMaterial
-    }
-
-    val blurEffect = UIBlurEffect.effectWithStyle(blurStyle)
-    val effectView = UIVisualEffectView(effect = blurEffect)
-    effectView.autoresizingMask =
-        UIViewAutoresizingFlexibleWidth or UIViewAutoresizingFlexibleHeight
-    container.addSubview(effectView)
-
-    if (config.tintColorValue != 0L) {
-        val tintView = UIView(frame = CGRectZero.readValue())
-        tintView.backgroundColor = uiColorFromPackedValue(config.tintColorValue)
-        tintView.autoresizingMask =
-            UIViewAutoresizingFlexibleWidth or UIViewAutoresizingFlexibleHeight
-        effectView.contentView.addSubview(tintView)
-    }
-
-    return container
-}
-
-/**
- * Apply blur, tint, blend mode, and gradient to a backdrop-based blur view.
- */
-@OptIn(ExperimentalForeignApi::class)
-private fun applyConfigToBackdropView(
-    container: RealTimeBlurContainerView,
-    config: BlurOverlayConfig,
-) {
-    val desiredOrder = resolveBlendOrder(config)
-
-    // If blend order changed, tear down and rebuild the layer hierarchy
-    if (desiredOrder != container.currentBlendOrder) {
-        teardownLayerHierarchy(container)
-        if (!buildLayerHierarchy(container, desiredOrder)) return
-    }
-
-    CATransaction.begin()
-    CATransaction.setDisableActions(true)
-
-    val bounds = container.bounds
-    val radius = config.radius.toDouble()
-
-    when (container.currentBlendOrder) {
-        BlendOrder.AFTER_BLUR -> applyAfterBlurConfig(container, config, bounds, radius)
-        BlendOrder.BEFORE_BLUR -> applyBeforeBlurConfig(container, config, bounds, radius)
-    }
-
-    CATransaction.commit()
-}
-
-/**
- * afterBlur: single backdrop with blur, sibling tint layer (no compositingFilter).
- */
-@OptIn(ExperimentalForeignApi::class)
-private fun applyAfterBlurConfig(
-    container: RealTimeBlurContainerView,
-    config: BlurOverlayConfig,
-    bounds: kotlinx.cinterop.CValue<platform.CoreGraphics.CGRect>,
-    radius: Double,
-) {
-    val backdrop = container.mainBackdropLayer ?: return
-    val tintLayer = container.afterBlurTintLayer ?: return
-
-    backdrop.frame = bounds
-    tintLayer.frame = bounds
-
-    // Apply blur filter to main backdrop
-    applyBlurFilter(container, backdrop, config, radius)
-
-    // Scale factor: lower = better performance for uniform blur
-    val scale = if (config.gradient == null) {
-        (1.0 / config.downsampleFactor).coerceIn(0.05, 1.0)
-    } else {
-        1.0
-    }
-    backdrop.setValue(scale, forKey = "scale")
-
-    // Tint (no compositingFilter for Normal blend mode)
-    if (config.tintColorValue != 0L) {
-        tintLayer.backgroundColor = uiColorFromPackedValue(config.tintColorValue)?.CGColor
-    } else {
-        tintLayer.backgroundColor = null
-    }
-    tintLayer.compositingFilter = null
-
-    // Apply gradient mask to tint if variable blur
-    if (config.gradient != null && container.isVariableBlur) {
-        val maskCache = container.gradientMaskCache ?: IosGradientMaskCache().also {
-            container.gradientMaskCache = it
-        }
-        val mask = maskCache.getOrCreate(config.gradient)
-        if (mask != null && config.tintColorValue != 0L) {
-            val tintMaskLayer = CALayer()
-            tintMaskLayer.frame = bounds
-            tintMaskLayer.contents = mask
-            tintMaskLayer.contentsGravity = kCAGravityResizeAspectFill
-            tintLayer.mask = tintMaskLayer
-        } else {
-            tintLayer.mask = null
-        }
-    } else {
-        tintLayer.mask = null
-    }
-}
-
-/**
- * beforeBlur: preBlendBackdrop (radius=0) with tintLayer sublayer (compositingFilter),
- * then mainBackdrop blurs the combined result.
- */
-@OptIn(ExperimentalForeignApi::class)
-private fun applyBeforeBlurConfig(
-    container: RealTimeBlurContainerView,
-    config: BlurOverlayConfig,
-    bounds: kotlinx.cinterop.CValue<platform.CoreGraphics.CGRect>,
-    radius: Double,
-) {
-    val preBlend = container.preBlendBackdropLayer ?: return
-    val tintLayer = container.preBlendTintLayer ?: return
-    val mainBackdrop = container.mainBackdropLayer ?: return
-
-    preBlend.frame = bounds
-    tintLayer.frame = bounds
-    mainBackdrop.frame = bounds
-
-    // Pre-blend backdrop: gaussianBlur with radius=0 (needed so the backdrop layer works)
-    val zeroBlurFilter = IosBackdropLayerProvider.createGaussianBlurFilter(0.0)
-    if (zeroBlurFilter != null) {
-        preBlend.setValue(listOf(zeroBlurFilter), forKey = "filters")
-    }
-    // Full resolution for crisp blend modes
-    preBlend.setValue(1.0, forKey = "scale")
-
-    // Tint layer with compositingFilter blends against the pre-blend backdrop's content
-    if (config.tintColorValue != 0L) {
-        tintLayer.backgroundColor = uiColorFromPackedValue(config.tintColorValue)?.CGColor
-    } else {
-        tintLayer.backgroundColor = null
-    }
-    val filterName = IosBlendModeMapper.toCompositingFilterName(config.tintBlendMode)
-    tintLayer.compositingFilter = filterName
-
-    // Apply gradient mask to tint if variable blur
-    if (config.gradient != null && container.isVariableBlur) {
-        val maskCache = container.gradientMaskCache ?: IosGradientMaskCache().also {
-            container.gradientMaskCache = it
-        }
-        val mask = maskCache.getOrCreate(config.gradient)
-        if (mask != null && config.tintColorValue != 0L) {
-            val tintMaskLayer = CALayer()
-            tintMaskLayer.frame = bounds
-            tintMaskLayer.contents = mask
-            tintMaskLayer.contentsGravity = kCAGravityResizeAspectFill
-            tintLayer.mask = tintMaskLayer
-        } else {
-            tintLayer.mask = null
-        }
-    } else {
-        tintLayer.mask = null
-    }
-
-    // Main backdrop: captures the pre-blended result and applies the actual blur
-    applyBlurFilter(container, mainBackdrop, config, radius)
-
-    // Scale factor for the main blur backdrop
-    val scale = if (config.gradient == null) {
-        (1.0 / config.downsampleFactor).coerceIn(0.05, 1.0)
-    } else {
-        1.0
-    }
-    mainBackdrop.setValue(scale, forKey = "scale")
-}
-
-/**
- * Applies the appropriate blur filter (uniform or variable) to the given backdrop layer.
- */
-@OptIn(ExperimentalForeignApi::class)
-private fun applyBlurFilter(
-    container: RealTimeBlurContainerView,
-    backdrop: CALayer,
-    config: BlurOverlayConfig,
-    radius: Double,
-) {
-    if (config.gradient != null && container.isVariableBlur) {
-        val maskCache = container.gradientMaskCache ?: IosGradientMaskCache().also {
-            container.gradientMaskCache = it
-        }
-        val mask = maskCache.getOrCreate(config.gradient)
-        if (mask != null) {
-            val filter = IosBackdropLayerProvider.createVariableBlurFilter(radius, mask)
-            if (filter != null) {
-                backdrop.setValue(listOf(filter), forKey = "filters")
-            }
-        }
-    } else {
-        val filter = IosBackdropLayerProvider.createGaussianBlurFilter(radius)
-        if (filter != null) {
-            backdrop.setValue(listOf(filter), forKey = "filters")
-        }
-    }
-}
-
-/**
- * Update an existing blur view with new configuration.
- */
-@OptIn(ExperimentalForeignApi::class)
-private fun updateNativeBlurView(blurView: UIView, config: BlurOverlayConfig) {
-    val container = blurView as? RealTimeBlurContainerView
-
-    if (container == null || container.isFallback) {
-        // Fallback views cannot be updated in-place; replace the subviews
-        val parent = blurView.superview ?: return
-        blurView.removeFromSuperview()
-        (container)?.release()
-
-        val newView = createNativeBlurView(config)
-        newView.setFrame(parent.bounds)
-        newView.autoresizingMask =
-            UIViewAutoresizingFlexibleWidth or UIViewAutoresizingFlexibleHeight
-        parent.insertSubview(newView, atIndex = 0)
-        return
-    }
-
-    // Check if blur mode changed (uniform <-> variable)
-    val needsVariableBlur = config.gradient != null
-    if (needsVariableBlur != container.isVariableBlur) {
-        val parent = blurView.superview ?: return
-        blurView.removeFromSuperview()
-        container.release()
-
-        val newView = createNativeBlurView(config)
-        newView.setFrame(parent.bounds)
-        newView.autoresizingMask =
-            UIViewAutoresizingFlexibleWidth or UIViewAutoresizingFlexibleHeight
-        parent.insertSubview(newView, atIndex = 0)
-        return
-    }
-
-    // Update in-place (blend order change is handled inside applyConfigToBackdropView)
-    applyConfigToBackdropView(container, config)
-}
-
-private fun uiColorFromPackedValue(packedValue: Long): UIColor? {
-    if (packedValue == 0L) return null
-    val argb = packedValue.toInt()
-    val alpha = ((argb ushr 24) and 0xFF) / 255.0
-    val red = ((argb ushr 16) and 0xFF) / 255.0
-    val green = ((argb ushr 8) and 0xFF) / 255.0
-    val blue = (argb and 0xFF) / 255.0
-    return UIColor(red = red, green = green, blue = blue, alpha = alpha)
+private fun mapBlendMode(mode: BlurBlendMode): ComposeBlendMode = when (mode) {
+    BlurBlendMode.Normal -> ComposeBlendMode.SrcOver
+    BlurBlendMode.ColorDodge -> ComposeBlendMode.ColorDodge
+    BlurBlendMode.ColorBurn -> ComposeBlendMode.ColorBurn
+    BlurBlendMode.Multiply -> ComposeBlendMode.Multiply
+    BlurBlendMode.Screen -> ComposeBlendMode.Screen
+    BlurBlendMode.Overlay -> ComposeBlendMode.Overlay
+    BlurBlendMode.SoftLight -> ComposeBlendMode.Softlight
+    BlurBlendMode.HardLight -> ComposeBlendMode.Hardlight
+    BlurBlendMode.Darken -> ComposeBlendMode.Darken
+    BlurBlendMode.Lighten -> ComposeBlendMode.Lighten
+    BlurBlendMode.Difference -> ComposeBlendMode.Difference
+    BlurBlendMode.Exclusion -> ComposeBlendMode.Exclusion
 }
