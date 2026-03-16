@@ -64,12 +64,12 @@ afterEvaluate {
     publishing {
         publications.withType<MavenPublication> {
             groupId = findProperty("GROUP")?.toString() ?: "io.github.ezoushen"
-            version = findProperty("VERSION_NAME")?.toString() ?: "1.0.0"
+            version = findProperty("VERSION_NAME")?.toString() ?: "0.1.0"
 
             pom {
                 name.set("blur-cmp")
                 description.set("Compose Multiplatform real-time blur overlay for Android and iOS")
-                url.set("https://github.com/ezoushen/blur-android")
+                url.set("https://github.com/ezoushen/blur-cmp")
                 licenses {
                     license {
                         name.set("Apache License 2.0")
@@ -82,7 +82,7 @@ afterEvaluate {
         repositories {
             maven {
                 name = "GitHubPackages"
-                url = uri("https://maven.pkg.github.com/ezoushen/blur-android")
+                url = uri("https://maven.pkg.github.com/ezoushen/blur-cmp")
                 credentials {
                     username = System.getenv("GITHUB_ACTOR")
                         ?: findProperty("gpr.user")?.toString()
