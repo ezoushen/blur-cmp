@@ -46,17 +46,6 @@ actual fun BlurOverlayHost(
             val hasTint = config.tintColorValue != 0L
             val isNonNormalBlend = config.tintBlendMode != BlurBlendMode.Normal
 
-            if (hasTint && isNonNormalBlend) {
-                AndroidView(
-                    factory = { ctx -> TintOverlayView(ctx) },
-                    modifier = Modifier.fillMaxSize(),
-                    update = { view ->
-                        view.setTint(config.tintColorValue.toInt(), config.tintBlendMode)
-                        view.alpha = state.alpha
-                    },
-                )
-            }
-
             if (gradient != null) {
                 val context = LocalContext.current
                 val blurView = remember { VariableBlurView(context) }
@@ -65,19 +54,51 @@ actual fun BlurOverlayHost(
                     onDispose { blurView.setIsLive(false) }
                 }
 
+                // Single container for tint + blur layers; alpha applied here
                 AndroidView(
-                    factory = { blurView },
+                    factory = { ctx ->
+                        val blurContainer = FrameLayout(ctx)
+                        val matchParent = FrameLayout.LayoutParams(
+                            FrameLayout.LayoutParams.MATCH_PARENT,
+                            FrameLayout.LayoutParams.MATCH_PARENT,
+                        )
+                        if (hasTint && isNonNormalBlend) {
+                            val tintView = TintOverlayView(ctx)
+                            tintView.tag = "tint"
+                            tintView.setTint(config.tintColorValue.toInt(), config.tintBlendMode)
+                            blurContainer.addView(tintView, matchParent)
+                        }
+                        blurContainer.addView(blurView, matchParent)
+                        blurContainer
+                    },
                     modifier = Modifier.fillMaxSize(),
-                    update = { view ->
+                    update = { container ->
+                        val tintView = container.findViewWithTag<TintOverlayView>("tint")
+                        if (hasTint && isNonNormalBlend) {
+                            if (tintView == null) {
+                                val matchParent = FrameLayout.LayoutParams(
+                                    FrameLayout.LayoutParams.MATCH_PARENT,
+                                    FrameLayout.LayoutParams.MATCH_PARENT,
+                                )
+                                val newTint = TintOverlayView(container.context)
+                                newTint.tag = "tint"
+                                container.addView(newTint, 0, matchParent)
+                                newTint.setTint(config.tintColorValue.toInt(), config.tintBlendMode)
+                            } else {
+                                tintView.setTint(config.tintColorValue.toInt(), config.tintBlendMode)
+                            }
+                        } else {
+                            tintView?.let { container.removeView(it) }
+                        }
                         val blurGradient = AndroidGradientMapper.toBlurGradient(gradient, config.radius)
-                        view.setBlurGradient(blurGradient)
-                        view.setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
-                        view.setIsLive(config.isLive)
-                        view.alpha = state.alpha
+                        blurView.setBlurGradient(blurGradient)
+                        blurView.setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
+                        blurView.setIsLive(config.isLive)
+                        container.alpha = state.alpha
                     },
                 )
 
-                // Content in a ComposeView wrapped by a FrameLayout, excluded from capture
+                // Content overlay — separate from blur container, no alpha
                 ContentOverlay(
                     blurView = blurView,
                     content = content,
@@ -90,17 +111,49 @@ actual fun BlurOverlayHost(
                     onDispose { blurView.setIsLive(false) }
                 }
 
+                // Single container for tint + blur layers; alpha applied here
                 AndroidView(
-                    factory = { blurView },
+                    factory = { ctx ->
+                        val blurContainer = FrameLayout(ctx)
+                        val matchParent = FrameLayout.LayoutParams(
+                            FrameLayout.LayoutParams.MATCH_PARENT,
+                            FrameLayout.LayoutParams.MATCH_PARENT,
+                        )
+                        if (hasTint && isNonNormalBlend) {
+                            val tintView = TintOverlayView(ctx)
+                            tintView.tag = "tint"
+                            tintView.setTint(config.tintColorValue.toInt(), config.tintBlendMode)
+                            blurContainer.addView(tintView, matchParent)
+                        }
+                        blurContainer.addView(blurView, matchParent)
+                        blurContainer
+                    },
                     modifier = Modifier.fillMaxSize(),
-                    update = { view ->
-                        view.setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
-                        view.setIsLive(config.isLive)
-                        view.alpha = state.alpha
+                    update = { container ->
+                        val tintView = container.findViewWithTag<TintOverlayView>("tint")
+                        if (hasTint && isNonNormalBlend) {
+                            if (tintView == null) {
+                                val matchParent = FrameLayout.LayoutParams(
+                                    FrameLayout.LayoutParams.MATCH_PARENT,
+                                    FrameLayout.LayoutParams.MATCH_PARENT,
+                                )
+                                val newTint = TintOverlayView(container.context)
+                                newTint.tag = "tint"
+                                container.addView(newTint, 0, matchParent)
+                                newTint.setTint(config.tintColorValue.toInt(), config.tintBlendMode)
+                            } else {
+                                tintView.setTint(config.tintColorValue.toInt(), config.tintBlendMode)
+                            }
+                        } else {
+                            tintView?.let { container.removeView(it) }
+                        }
+                        blurView.setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
+                        blurView.setIsLive(config.isLive)
+                        container.alpha = state.alpha
                     },
                 )
 
-                // Content in a ComposeView wrapped by a FrameLayout, excluded from capture
+                // Content overlay — separate from blur container, no alpha
                 ContentOverlay(
                     blurView = blurView,
                     content = content,
