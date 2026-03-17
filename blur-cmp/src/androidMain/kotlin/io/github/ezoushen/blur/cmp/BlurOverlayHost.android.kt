@@ -14,6 +14,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
@@ -52,6 +53,7 @@ actual fun BlurOverlayHost(
                     modifier = Modifier.fillMaxSize(),
                     update = { view ->
                         view.setTint(config.tintColorValue.toInt(), config.tintBlendMode)
+                        view.alpha = state.alpha
                     },
                 )
             }
@@ -72,6 +74,7 @@ actual fun BlurOverlayHost(
                         view.setBlurGradient(blurGradient)
                         view.setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
                         view.setIsLive(config.isLive)
+                        view.alpha = state.alpha
                     },
                 )
 
@@ -94,6 +97,7 @@ actual fun BlurOverlayHost(
                     update = { view ->
                         view.setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
                         view.setIsLive(config.isLive)
+                        view.alpha = state.alpha
                     },
                 )
 

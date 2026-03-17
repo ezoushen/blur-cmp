@@ -17,6 +17,8 @@ class BlurOverlayState internal constructor(initialConfig: BlurOverlayConfig) {
 
     var isEnabled: Boolean by mutableStateOf(true)
 
+    var alpha: Float by mutableStateOf(1f)
+
     /** Convenience: update radius only. */
     fun setRadius(radius: Float) {
         config = config.copy(radius = radius)

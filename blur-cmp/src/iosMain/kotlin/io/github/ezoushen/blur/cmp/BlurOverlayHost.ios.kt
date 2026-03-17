@@ -102,6 +102,10 @@ actual fun BlurOverlayHost(
         blurState.applyConfig(config)
     }
 
+    LaunchedEffect(state.alpha) {
+        blurState.applyAlpha(state.alpha)
+    }
+
     Box(modifier = modifier) {
         background()
     }
@@ -140,6 +144,11 @@ internal class IosBlurState {
     private var isBeforeBlurActive = false
 
     var contentWindow: UIWindow? = null
+
+    fun applyAlpha(alpha: Float) {
+        container?.setAlpha(alpha.toDouble())
+        contentWindow?.setAlpha(alpha.toDouble())
+    }
 
     fun setupInView(parentView: UIView, initialConfig: BlurOverlayConfig) {
         val cont = UIView(frame = parentView.bounds)
