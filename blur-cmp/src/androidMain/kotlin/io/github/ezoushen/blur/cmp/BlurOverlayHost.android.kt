@@ -8,6 +8,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -22,13 +23,18 @@ import io.github.ezoushen.blur.view.VariableBlurView
  * Android BlurOverlayHost using blur-core's native BlurView/VariableBlurView.
  *
  * Rendering pipeline: capture → tint (with blend mode) → blur → render.
- * Non-Normal blend mode tints are applied to the captured bitmap BEFORE blur
- * via BlurConfig.preBlurTintColor, so the blend mode interacts with actual
- * background pixels. Normal blend mode tints are applied AFTER blur via
- * BlurConfig.overlayColor.
  *
- * Alpha is applied to the BlurView's view.alpha for smooth fade transitions.
- * ContentOverlay is excluded from blur capture and has no alpha applied.
+ * Alpha capture strategy:
+ * - Fade-in (alpha increasing): live capture stays ON. The blur needs fresh
+ *   content since there may be no prior captured frame. The dirty flag side
+ *   effect of sourceView.draw() is acceptable because the blur is covering
+ *   the background anyway.
+ * - Fade-out (alpha decreasing): live capture stops. The blur holds its last
+ *   captured frame while fading. This avoids sourceView.draw() clearing View
+ *   dirty flags, which would freeze Compose animations visible behind the
+ *   semi-transparent blur.
+ * - Alpha == 1.0: normal live capture.
+ * - Alpha == 0.0: capture off (invisible).
  */
 @Composable
 actual fun BlurOverlayHost(
@@ -44,6 +50,7 @@ actual fun BlurOverlayHost(
 
         if (state.isEnabled && config.radius > 0f) {
             val gradient = config.gradient
+            var prevAlpha by remember { mutableFloatStateOf(state.alpha) }
 
             if (gradient != null) {
                 val context = LocalContext.current
@@ -60,14 +67,14 @@ actual fun BlurOverlayHost(
                         val blurGradient = AndroidGradientMapper.toBlurGradient(gradient, config.radius)
                         view.setBlurGradient(blurGradient)
                         view.setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
-                        view.setIsLive(config.isLive && state.alpha == 1f)
-                        view.alpha = state.alpha
                     },
                 )
 
                 LaunchedEffect(state.alpha) {
+                    val fadingOut = state.alpha < prevAlpha
                     blurView.alpha = state.alpha
-                    blurView.setIsLive(config.isLive && state.alpha == 1f)
+                    blurView.setIsLive(config.isLive && state.alpha > 0f && !fadingOut)
+                    prevAlpha = state.alpha
                 }
 
                 ContentOverlay(blurView = blurView, content = content)
@@ -84,14 +91,14 @@ actual fun BlurOverlayHost(
                     modifier = Modifier.fillMaxSize(),
                     update = { view ->
                         view.setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
-                        view.setIsLive(config.isLive && state.alpha == 1f)
-                        view.alpha = state.alpha
                     },
                 )
 
                 LaunchedEffect(state.alpha) {
+                    val fadingOut = state.alpha < prevAlpha
                     blurView.alpha = state.alpha
-                    blurView.setIsLive(config.isLive && state.alpha == 1f)
+                    blurView.setIsLive(config.isLive && state.alpha > 0f && !fadingOut)
+                    prevAlpha = state.alpha
                 }
 
                 ContentOverlay(blurView = blurView, content = content)
