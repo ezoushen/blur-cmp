@@ -63,10 +63,8 @@ class BlurView @JvmOverloads constructor(
         if (isBlurEnabled && isLive && isShown) {
             val controller = blurController
             if (controller != null) {
-                // Mark as dirty to capture updated background content
                 controller.invalidate()
                 if (controller.update()) {
-                    // Blur was updated, invalidate to redraw with new blur
                     invalidate()
                 }
             }

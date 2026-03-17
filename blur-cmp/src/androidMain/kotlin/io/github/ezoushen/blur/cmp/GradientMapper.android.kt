@@ -1,5 +1,6 @@
 package io.github.ezoushen.blur.cmp
 
+import android.os.Build
 import androidx.compose.ui.geometry.Offset
 import io.github.ezoushen.blur.BlurConfig
 import io.github.ezoushen.blur.BlurGradient
@@ -7,21 +8,30 @@ import io.github.ezoushen.blur.BlurGradient
 internal object AndroidGradientMapper {
 
     fun toBlurConfig(config: BlurOverlayConfig): BlurConfig {
-        // Only pass overlayColor to blur-core when blend mode is Normal.
-        // For non-Normal blend modes, the tint is applied by a separate
-        // TintOverlayView using Android's BlendMode API — passing it here
-        // too would double-apply the tint.
-        val overlayArgb: Int? = if (config.tintColorValue != 0L &&
-            config.tintBlendMode == BlurBlendMode.Normal
-        ) {
-            config.tintColorValue.toInt()
+        // Normal blend: tint applied AFTER blur via overlayColor (drawn on top of blurred content)
+        // Non-Normal blend: tint applied BEFORE blur via preBlurTintColor (blended into captured
+        // bitmap before blur algorithm runs, so the blend mode interacts with actual background pixels)
+        val hasTint = config.tintColorValue != 0L
+        val isNormal = config.tintBlendMode == BlurBlendMode.Normal
+
+        val overlayArgb: Int? = if (hasTint && isNormal) config.tintColorValue.toInt() else null
+
+        val preBlurTint: Int?
+        val preBlurBlendOrdinal: Int?
+        if (hasTint && !isNormal && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            preBlurTint = config.tintColorValue.toInt()
+            preBlurBlendOrdinal = AndroidBlendModeMapper.toAndroidBlendMode(config.tintBlendMode)?.ordinal
         } else {
-            null
+            preBlurTint = null
+            preBlurBlendOrdinal = null
         }
+
         return BlurConfig(
             radius = config.radius,
             overlayColor = overlayArgb,
             downsampleFactor = config.downsampleFactor,
+            preBlurTintColor = preBlurTint,
+            preBlurBlendModeOrdinal = preBlurBlendOrdinal,
         )
     }
 

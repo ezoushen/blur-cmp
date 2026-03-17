@@ -22,7 +22,12 @@ data class BlurConfig(
     @ColorInt
     val overlayColor: Int? = null,
     @FloatRange(from = 1.0, to = 16.0)
-    val downsampleFactor: Float = 4f
+    val downsampleFactor: Float = 4f,
+    /** Tint color applied BEFORE blur (for non-Normal blend modes). */
+    @ColorInt
+    val preBlurTintColor: Int? = null,
+    /** Android BlendMode ordinal for pre-blur tint. Only used when preBlurTintColor is set. */
+    val preBlurBlendModeOrdinal: Int? = null
 ) {
     init {
         require(radius >= 0f) { "Radius must be non-negative, was $radius" }

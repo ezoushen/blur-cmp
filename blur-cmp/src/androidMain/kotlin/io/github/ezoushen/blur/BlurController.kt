@@ -6,7 +6,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
-import android.util.Log
+import android.os.Build
 import android.view.View
 import io.github.ezoushen.blur.algorithm.BlurAlgorithm
 import io.github.ezoushen.blur.algorithm.BlurAlgorithmFactory
@@ -62,6 +62,7 @@ class BlurController(
     private var isInitialized = false
 
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val tintPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val srcRect = Rect()
     private val dstRect = Rect()
 
@@ -173,6 +174,9 @@ class BlurController(
             return false
         }
 
+        // Apply pre-blur tint (for non-Normal blend modes: tint before blur)
+        applyPreBlurTint(captureOutput)
+
         // Scale radius to maintain consistent blur appearance across different downsample factors
         // Using 4x as baseline: at 8x downsample, halve the radius; at 2x, double it
         val scaledRadius = config.radius * (BASELINE_DOWNSAMPLE / config.downsampleFactor)
@@ -190,6 +194,31 @@ class BlurController(
         isDirty = false
 
         return true
+    }
+
+    /**
+     * Applies pre-blur tint with blend mode to the captured bitmap.
+     * This is used for non-Normal blend modes where the tint should be
+     * part of the blurred content (capture → tint → blur → render).
+     */
+    private fun applyPreBlurTint(bitmap: Bitmap) {
+        val tintColor = config.preBlurTintColor ?: return
+        val blendOrdinal = config.preBlurBlendModeOrdinal ?: return
+
+        val canvas = Canvas(bitmap)
+        tintPaint.color = tintColor
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val blendMode = android.graphics.BlendMode.values()[blendOrdinal]
+                tintPaint.blendMode = blendMode
+            } catch (_: Exception) {
+                // Fallback: just draw with SRC_OVER
+                tintPaint.blendMode = null
+            }
+        }
+
+        canvas.drawRect(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat(), tintPaint)
     }
 
     /**
