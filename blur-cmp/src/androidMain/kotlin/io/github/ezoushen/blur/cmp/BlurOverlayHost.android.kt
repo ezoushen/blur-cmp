@@ -67,6 +67,7 @@ actual fun BlurOverlayHost(
                         val blurGradient = AndroidGradientMapper.toBlurGradient(gradient, config.radius)
                         view.setBlurGradient(blurGradient)
                         view.setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
+                        view.alpha = state.alpha
                     },
                 )
 
@@ -91,6 +92,7 @@ actual fun BlurOverlayHost(
                     modifier = Modifier.fillMaxSize(),
                     update = { view ->
                         view.setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
+                        view.alpha = state.alpha
                     },
                 )
 
