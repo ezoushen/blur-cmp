@@ -18,11 +18,16 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -49,6 +54,7 @@ private enum class DemoMode(val label: String) {
     Uniform("Uniform"),
     Variable("Variable"),
     ColorDodge("ColorDodge"),
+    Transition("Transition"),
 }
 
 private val textWhite = TextStyle(color = Color.White, fontSize = 14.sp)
@@ -77,6 +83,10 @@ fun BlurCmpDemoApp() {
             onModeChange = { mode = it },
         )
         DemoMode.ColorDodge -> ColorDodgeDemo(
+            selectedMode = mode,
+            onModeChange = { mode = it },
+        )
+        DemoMode.Transition -> TransitionDemo(
             selectedMode = mode,
             onModeChange = { mode = it },
         )
@@ -471,6 +481,103 @@ private fun ColorDodgeDemo(
                     LabeledSlider("Radius", radius, { radius = it }, 0f..80f)
                     LabeledSlider("Tint Alpha", tintAlpha, { tintAlpha = it }, 0f..1f)
                     ToggleRow("Normal <-> ColorDodge", useDodge) { useDodge = it }
+                    Spacer(Modifier.height(16.dp))
+                }
+            }
+        }
+    }
+}
+
+// ── Mode 4: Transition Demo ────────────────────────────────────────────
+
+@Composable
+private fun TransitionDemo(
+    selectedMode: DemoMode,
+    onModeChange: (DemoMode) -> Unit,
+) {
+    var radius by remember { mutableStateOf(30f) }
+    var durationMs by remember { mutableStateOf(800f) }
+    val blurAlpha = remember { Animatable(1f) }
+    val scope = rememberCoroutineScope()
+    var isBlurVisible by remember { mutableStateOf(true) }
+
+    val state = rememberBlurOverlayState(
+        initialConfig = BlurOverlayConfig(
+            radius = radius,
+            tintBlendMode = BlurBlendMode.ColorDodge,
+        ).withTint(Color.White.copy(alpha = 0.15f)),
+    )
+
+    state.config = BlurOverlayConfig(
+        radius = radius,
+        tintBlendMode = BlurBlendMode.ColorDodge,
+    ).withTint(Color.White.copy(alpha = 0.15f))
+
+    LaunchedEffect(blurAlpha.value) {
+        state.alpha = blurAlpha.value
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        AnimatedBackground(modifier = Modifier.fillMaxSize())
+
+        BlurOverlay(state = state, modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Spacer(Modifier.height(48.dp))
+                ModeChips(selected = selectedMode, onSelect = onModeChange)
+
+                Box(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        BasicText("Blur Transition", style = textTitle)
+                        Spacer(Modifier.height(8.dp))
+                        BasicText(
+                            "alpha = ${blurAlpha.value.fmt()}",
+                            style = textWhite,
+                        )
+                        Spacer(Modifier.height(24.dp))
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Chip(
+                                label = "Fade In",
+                                isSelected = isBlurVisible,
+                                onClick = {
+                                    isBlurVisible = true
+                                    scope.launch {
+                                        blurAlpha.animateTo(
+                                            targetValue = 1f,
+                                            animationSpec = tween(durationMs.toInt()),
+                                        )
+                                    }
+                                },
+                            )
+                            Chip(
+                                label = "Fade Out",
+                                isSelected = !isBlurVisible,
+                                onClick = {
+                                    isBlurVisible = false
+                                    scope.launch {
+                                        blurAlpha.animateTo(
+                                            targetValue = 0f,
+                                            animationSpec = tween(durationMs.toInt()),
+                                        )
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.Black.copy(alpha = 0.6f))
+                        .padding(vertical = 8.dp),
+                ) {
+                    LabeledSlider("Radius", radius, { radius = it }, 0f..80f)
+                    LabeledSlider("Duration (ms)", durationMs, { durationMs = it }, 200f..3000f)
+                    LabeledSlider("Alpha", blurAlpha.value, { scope.launch { blurAlpha.snapTo(it) } }, 0f..1f)
                     Spacer(Modifier.height(16.dp))
                 }
             }
