@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -59,13 +60,15 @@ actual fun BlurOverlayHost(
                         val blurGradient = AndroidGradientMapper.toBlurGradient(gradient, config.radius)
                         view.setBlurGradient(blurGradient)
                         view.setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
-                        // Stop capture during alpha transitions: sourceView.draw()
-                        // clears View dirty flags, freezing Compose animations.
-                        // The blur holds its last captured frame while fading.
                         view.setIsLive(config.isLive && state.alpha == 1f)
                         view.alpha = state.alpha
                     },
                 )
+
+                LaunchedEffect(state.alpha) {
+                    blurView.alpha = state.alpha
+                    blurView.setIsLive(config.isLive && state.alpha == 1f)
+                }
 
                 ContentOverlay(blurView = blurView, content = content)
             } else {
@@ -81,13 +84,15 @@ actual fun BlurOverlayHost(
                     modifier = Modifier.fillMaxSize(),
                     update = { view ->
                         view.setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
-                        // Stop capture during alpha transitions: sourceView.draw()
-                        // clears View dirty flags, freezing Compose animations.
-                        // The blur holds its last captured frame while fading.
                         view.setIsLive(config.isLive && state.alpha == 1f)
                         view.alpha = state.alpha
                     },
                 )
+
+                LaunchedEffect(state.alpha) {
+                    blurView.alpha = state.alpha
+                    blurView.setIsLive(config.isLive && state.alpha == 1f)
+                }
 
                 ContentOverlay(blurView = blurView, content = content)
             }
