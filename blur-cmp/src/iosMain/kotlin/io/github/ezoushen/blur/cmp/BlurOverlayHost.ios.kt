@@ -147,7 +147,6 @@ internal class IosBlurState {
 
     fun applyAlpha(alpha: Float) {
         container?.setAlpha(alpha.toDouble())
-        contentWindow?.setAlpha(alpha.toDouble())
     }
 
     fun setupInView(parentView: UIView, initialConfig: BlurOverlayConfig) {
