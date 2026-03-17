@@ -496,8 +496,10 @@ private fun TransitionDemo(
     onModeChange: (DemoMode) -> Unit,
 ) {
     var maxRadius by remember { mutableStateOf(30f) }
+    var maxTintAlpha by remember { mutableStateOf(0.15f) }
     var durationMs by remember { mutableStateOf(800f) }
     val animatedRadius = remember { Animatable(30f) }
+    val animatedTint = remember { Animatable(0.15f) }
     val scope = rememberCoroutineScope()
     var isBlurVisible by remember { mutableStateOf(true) }
 
@@ -505,13 +507,13 @@ private fun TransitionDemo(
         initialConfig = BlurOverlayConfig(
             radius = animatedRadius.value,
             tintBlendMode = BlurBlendMode.ColorDodge,
-        ).withTint(Color.White.copy(alpha = 0.15f)),
+        ).withTint(Color.White.copy(alpha = animatedTint.value)),
     )
 
     state.config = BlurOverlayConfig(
         radius = animatedRadius.value,
         tintBlendMode = BlurBlendMode.ColorDodge,
-    ).withTint(Color.White.copy(alpha = 0.15f))
+    ).withTint(Color.White.copy(alpha = animatedTint.value))
 
     Box(modifier = Modifier.fillMaxSize()) {
         AnimatedBackground(modifier = Modifier.fillMaxSize())
@@ -529,7 +531,7 @@ private fun TransitionDemo(
                         BasicText("Blur Transition", style = textTitle)
                         Spacer(Modifier.height(8.dp))
                         BasicText(
-                            "radius = ${animatedRadius.value.fmt()}",
+                            "radius = ${animatedRadius.value.fmt()}  tint = ${animatedTint.value.fmt()}",
                             style = textWhite,
                         )
                         Spacer(Modifier.height(24.dp))
@@ -541,10 +543,18 @@ private fun TransitionDemo(
                                 onClick = {
                                     isBlurVisible = true
                                     scope.launch {
-                                        animatedRadius.animateTo(
-                                            targetValue = maxRadius,
-                                            animationSpec = tween(durationMs.toInt()),
-                                        )
+                                        launch {
+                                            animatedRadius.animateTo(
+                                                targetValue = maxRadius,
+                                                animationSpec = tween(durationMs.toInt()),
+                                            )
+                                        }
+                                        launch {
+                                            animatedTint.animateTo(
+                                                targetValue = maxTintAlpha,
+                                                animationSpec = tween(durationMs.toInt()),
+                                            )
+                                        }
                                     }
                                 },
                             )
@@ -554,10 +564,18 @@ private fun TransitionDemo(
                                 onClick = {
                                     isBlurVisible = false
                                     scope.launch {
-                                        animatedRadius.animateTo(
-                                            targetValue = 0f,
-                                            animationSpec = tween(durationMs.toInt()),
-                                        )
+                                        launch {
+                                            animatedRadius.animateTo(
+                                                targetValue = 0f,
+                                                animationSpec = tween(durationMs.toInt()),
+                                            )
+                                        }
+                                        launch {
+                                            animatedTint.animateTo(
+                                                targetValue = 0f,
+                                                animationSpec = tween(durationMs.toInt()),
+                                            )
+                                        }
                                     }
                                 },
                             )
@@ -569,11 +587,14 @@ private fun TransitionDemo(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(Color.Black.copy(alpha = 0.6f))
-                        .padding(vertical = 8.dp),
+                        .padding(vertical = 8.dp)
+                        .verticalScroll(rememberScrollState()),
                 ) {
                     LabeledSlider("Max Radius", maxRadius, { maxRadius = it }, 0f..80f)
+                    LabeledSlider("Max Tint Alpha", maxTintAlpha, { maxTintAlpha = it }, 0f..1f)
                     LabeledSlider("Duration (ms)", durationMs, { durationMs = it }, 200f..3000f)
                     LabeledSlider("Radius", animatedRadius.value, { scope.launch { animatedRadius.snapTo(it) } }, 0f..80f)
+                    LabeledSlider("Tint Alpha", animatedTint.value, { scope.launch { animatedTint.snapTo(it) } }, 0f..1f)
                     Spacer(Modifier.height(16.dp))
                 }
             }
