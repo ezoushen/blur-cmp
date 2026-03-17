@@ -16,18 +16,9 @@ import kotlin.math.floor
 import kotlin.math.ln
 import kotlin.math.pow
 
-/**
- * Parameters for smooth blur transitions.
- *
- * @param iterations Number of downsample/upsample passes
- * @param offset Sampling offset multiplier (1.0 to 2.0)
- * @param blendFactor How much to blend with the next iteration level (0.0 to 1.0)
- *                    0.0 = use only current level, 1.0 = use only next level
- */
 private data class BlurParams(
     val iterations: Int,
     val offset: Float,
-    val blendFactor: Float
 )
 
 /**
@@ -61,14 +52,9 @@ class OpenGLBlur : BlurAlgorithm {
 
     private var downsampleProgram = 0
     private var upsampleProgram = 0
-    private var blendProgram = 0
 
     private var framebuffers: IntArray? = null
     private var textures: IntArray? = null
-
-    // Extra framebuffer/texture for blending between iteration levels
-    private var blendFramebuffer = 0
-    private var blendTexture = 0
 
     private var outputBitmap: Bitmap? = null
     private var lastWidth = 0
@@ -141,38 +127,15 @@ class OpenGLBlur : BlurAlgorithm {
         try {
             makeCurrent()
 
-            // Calculate blur parameters with blend factor for smooth transitions
             val params = calculateBlurParams(radius)
 
             // Upload input texture
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texs[0])
             android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, input, 0)
 
-            // Determine if we need blending between iteration levels
-            val needsBlending = params.blendFactor > 0.01f && params.iterations < MAX_ITERATIONS
-
-            if (needsBlending) {
-                // Compute blur with N iterations first
-                performBlurPasses(fbs, texs, params.iterations, params.offset)
-
-                // Copy result to blend texture
-                copyTexture(texs[0], blendTexture, lastWidth, lastHeight)
-
-                // Re-upload input texture (it was overwritten)
-                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texs[0])
-                android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, input, 0)
-
-                // Compute blur with N+1 iterations
-                // Calculate offset for N+1 iterations to maintain visual continuity
-                val nextOffset = (params.offset / 2.0f).coerceIn(MIN_OFFSET, MAX_OFFSET)
-                performBlurPasses(fbs, texs, params.iterations + 1, nextOffset)
-
-                // Blend the two results: mix(N_iterations, N+1_iterations, blendFactor)
-                blendTextures(blendTexture, texs[0], fbs[0], params.blendFactor)
-            } else {
-                // No blending needed, just compute single blur
-                performBlurPasses(fbs, texs, params.iterations, params.offset)
-            }
+            // Single blur pass — offset interpolation within each iteration level
+            // provides smooth transitions without the artifacts from cross-level blending
+            performBlurPasses(fbs, texs, params.iterations, params.offset)
 
             // Read pixels from final framebuffer
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbs[0])
@@ -243,68 +206,6 @@ class OpenGLBlur : BlurAlgorithm {
     }
 
     /**
-     * Copies one texture to another using a simple blit.
-     */
-    private fun copyTexture(srcTexture: Int, dstTexture: Int, width: Int, height: Int) {
-        // Read from source
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, framebuffers!![0])
-        GLES20.glFramebufferTexture2D(
-            GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0,
-            GLES20.GL_TEXTURE_2D, srcTexture, 0
-        )
-
-        val buffer = ByteBuffer.allocateDirect(width * height * 4).order(ByteOrder.nativeOrder())
-        GLES20.glReadPixels(0, 0, width, height, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buffer)
-        buffer.rewind()
-
-        // Write to destination
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, dstTexture)
-        GLES20.glTexSubImage2D(
-            GLES20.GL_TEXTURE_2D, 0, 0, 0, width, height,
-            GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buffer
-        )
-
-        // Restore framebuffer attachment
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, framebuffers!![0])
-        GLES20.glFramebufferTexture2D(
-            GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0,
-            GLES20.GL_TEXTURE_2D, textures!![0], 0
-        )
-    }
-
-    /**
-     * Blends two textures together with the given blend factor.
-     * Result is stored in the target framebuffer.
-     */
-    private fun blendTextures(texture1: Int, texture2: Int, targetFb: Int, blendFactor: Float) {
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, targetFb)
-        GLES20.glViewport(0, 0, lastWidth, lastHeight)
-
-        GLES20.glUseProgram(blendProgram)
-
-        // Bind first texture to unit 0
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texture1)
-        val tex1Loc = GLES20.glGetUniformLocation(blendProgram, "uTexture")
-        GLES20.glUniform1i(tex1Loc, 0)
-
-        // Bind second texture to unit 1
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texture2)
-        val tex2Loc = GLES20.glGetUniformLocation(blendProgram, "uTexture2")
-        GLES20.glUniform1i(tex2Loc, 1)
-
-        // Set blend factor
-        val blendLoc = GLES20.glGetUniformLocation(blendProgram, "uBlendFactor")
-        GLES20.glUniform1f(blendLoc, blendFactor)
-
-        drawQuad(blendProgram)
-
-        // Reset to texture unit 0
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-    }
-
-    /**
      * Calculates blur parameters from radius using continuous logarithmic mapping
      * with smooth blending between iteration levels.
      *
@@ -321,30 +222,15 @@ class OpenGLBlur : BlurAlgorithm {
      * @return BlurParams with iterations, offset, and blend factor
      */
     private fun calculateBlurParams(radius: Float): BlurParams {
-        if (radius <= 0) return BlurParams(1, 1.0f, 0.0f)
+        if (radius <= 0) return BlurParams(1, 1.0f)
 
-        // Normalize radius relative to base sigma
         val normalizedRadius = (radius / BASE_SIGMA).coerceAtLeast(1.0f)
-
-        // Calculate floating-point iterations using logarithm (base 2)
         val log2Radius = ln(normalizedRadius.toDouble()) / LN_2
-
-        // Base iterations (floor of log2)
-        val baseIterations = floor(log2Radius).toInt().coerceIn(1, MAX_ITERATIONS - 1)
-
-        // Fractional part determines blend factor (0.0 to 1.0)
-        // 0.0 = use only baseIterations, 1.0 = use only baseIterations+1
-        val fractionalPart = (log2Radius - baseIterations).coerceIn(0.0, 1.0)
-
-        // Calculate offset for the base iteration level
+        val baseIterations = floor(log2Radius).toInt().coerceIn(1, MAX_ITERATIONS)
         val iterationBase = 2.0.pow(baseIterations.toDouble()).toFloat()
         val offset = (normalizedRadius / iterationBase).coerceIn(MIN_OFFSET, MAX_OFFSET)
 
-        // Use smooth blend factor based on fractional part
-        // This creates a smooth transition zone throughout the entire range
-        val blendFactor = fractionalPart.toFloat()
-
-        return BlurParams(baseIterations, offset, blendFactor)
+        return BlurParams(baseIterations, offset)
     }
 
     private fun initEGL(): Boolean {
@@ -399,9 +285,6 @@ class OpenGLBlur : BlurAlgorithm {
 
         upsampleProgram = createProgram(VERTEX_SHADER, UPSAMPLE_FRAGMENT_SHADER)
         if (upsampleProgram == 0) return false
-
-        blendProgram = createProgram(VERTEX_SHADER, BLEND_FRAGMENT_SHADER)
-        if (blendProgram == 0) return false
 
         return true
     }
@@ -475,30 +358,6 @@ class OpenGLBlur : BlurAlgorithm {
             h = (h / 2).coerceAtLeast(1)
         }
 
-        // Create blend framebuffer/texture at full resolution for blending between iteration levels
-        val blendFbArray = IntArray(1)
-        val blendTexArray = IntArray(1)
-        GLES20.glGenFramebuffers(1, blendFbArray, 0)
-        GLES20.glGenTextures(1, blendTexArray, 0)
-        blendFramebuffer = blendFbArray[0]
-        blendTexture = blendTexArray[0]
-
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, blendTexture)
-        GLES20.glTexImage2D(
-            GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA,
-            width, height, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null
-        )
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, blendFramebuffer)
-        GLES20.glFramebufferTexture2D(
-            GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0,
-            GLES20.GL_TEXTURE_2D, blendTexture, 0
-        )
-
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         return true
     }
@@ -528,14 +387,6 @@ class OpenGLBlur : BlurAlgorithm {
         framebuffers = null
         textures = null
 
-        if (blendFramebuffer != 0) {
-            GLES20.glDeleteFramebuffers(1, intArrayOf(blendFramebuffer), 0)
-            blendFramebuffer = 0
-        }
-        if (blendTexture != 0) {
-            GLES20.glDeleteTextures(1, intArrayOf(blendTexture), 0)
-            blendTexture = 0
-        }
     }
 
     override fun release() {
@@ -550,10 +401,6 @@ class OpenGLBlur : BlurAlgorithm {
             if (upsampleProgram != 0) {
                 GLES20.glDeleteProgram(upsampleProgram)
                 upsampleProgram = 0
-            }
-            if (blendProgram != 0) {
-                GLES20.glDeleteProgram(blendProgram)
-                blendProgram = 0
             }
         }
 
@@ -671,21 +518,5 @@ class OpenGLBlur : BlurAlgorithm {
             }
         """
 
-        /**
-         * Fragment shader for blending two textures with a blend factor.
-         * Used to smoothly transition between iteration levels.
-         */
-        private const val BLEND_FRAGMENT_SHADER = """
-            precision mediump float;
-            uniform sampler2D uTexture;
-            uniform sampler2D uTexture2;
-            uniform float uBlendFactor;
-            varying vec2 vTexCoord;
-            void main() {
-                vec4 color1 = texture2D(uTexture, vTexCoord);
-                vec4 color2 = texture2D(uTexture2, vTexCoord);
-                gl_FragColor = mix(color1, color2, uBlendFactor);
-            }
-        """
     }
 }
