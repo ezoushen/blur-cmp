@@ -498,10 +498,10 @@ private fun TransitionDemo(
     var maxRadius by remember { mutableStateOf(30f) }
     var maxTintAlpha by remember { mutableStateOf(0.15f) }
     var durationMs by remember { mutableStateOf(800f) }
-    val animatedRadius = remember { Animatable(30f) }
-    val animatedTint = remember { Animatable(0.15f) }
+    val animatedRadius = remember { Animatable(0f) }
+    val animatedTint = remember { Animatable(0f) }
     val scope = rememberCoroutineScope()
-    var isBlurVisible by remember { mutableStateOf(true) }
+    var isBlurVisible by remember { mutableStateOf(false) }
 
     val state = rememberBlurOverlayState(
         initialConfig = BlurOverlayConfig(
