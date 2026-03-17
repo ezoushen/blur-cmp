@@ -495,27 +495,23 @@ private fun TransitionDemo(
     selectedMode: DemoMode,
     onModeChange: (DemoMode) -> Unit,
 ) {
-    var radius by remember { mutableStateOf(30f) }
+    var maxRadius by remember { mutableStateOf(30f) }
     var durationMs by remember { mutableStateOf(800f) }
-    val blurAlpha = remember { Animatable(1f) }
+    val animatedRadius = remember { Animatable(30f) }
     val scope = rememberCoroutineScope()
     var isBlurVisible by remember { mutableStateOf(true) }
 
     val state = rememberBlurOverlayState(
         initialConfig = BlurOverlayConfig(
-            radius = radius,
+            radius = animatedRadius.value,
             tintBlendMode = BlurBlendMode.ColorDodge,
         ).withTint(Color.White.copy(alpha = 0.15f)),
     )
 
     state.config = BlurOverlayConfig(
-        radius = radius,
+        radius = animatedRadius.value,
         tintBlendMode = BlurBlendMode.ColorDodge,
     ).withTint(Color.White.copy(alpha = 0.15f))
-
-    LaunchedEffect(blurAlpha.value) {
-        state.alpha = blurAlpha.value
-    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         AnimatedBackground(modifier = Modifier.fillMaxSize())
@@ -533,32 +529,32 @@ private fun TransitionDemo(
                         BasicText("Blur Transition", style = textTitle)
                         Spacer(Modifier.height(8.dp))
                         BasicText(
-                            "alpha = ${blurAlpha.value.fmt()}",
+                            "radius = ${animatedRadius.value.fmt()}",
                             style = textWhite,
                         )
                         Spacer(Modifier.height(24.dp))
 
                         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                             Chip(
-                                label = "Fade In",
+                                label = "Blur In",
                                 isSelected = isBlurVisible,
                                 onClick = {
                                     isBlurVisible = true
                                     scope.launch {
-                                        blurAlpha.animateTo(
-                                            targetValue = 1f,
+                                        animatedRadius.animateTo(
+                                            targetValue = maxRadius,
                                             animationSpec = tween(durationMs.toInt()),
                                         )
                                     }
                                 },
                             )
                             Chip(
-                                label = "Fade Out",
+                                label = "Blur Out",
                                 isSelected = !isBlurVisible,
                                 onClick = {
                                     isBlurVisible = false
                                     scope.launch {
-                                        blurAlpha.animateTo(
+                                        animatedRadius.animateTo(
                                             targetValue = 0f,
                                             animationSpec = tween(durationMs.toInt()),
                                         )
@@ -575,9 +571,9 @@ private fun TransitionDemo(
                         .background(Color.Black.copy(alpha = 0.6f))
                         .padding(vertical = 8.dp),
                 ) {
-                    LabeledSlider("Radius", radius, { radius = it }, 0f..80f)
+                    LabeledSlider("Max Radius", maxRadius, { maxRadius = it }, 0f..80f)
                     LabeledSlider("Duration (ms)", durationMs, { durationMs = it }, 200f..3000f)
-                    LabeledSlider("Alpha", blurAlpha.value, { scope.launch { blurAlpha.snapTo(it) } }, 0f..1f)
+                    LabeledSlider("Radius", animatedRadius.value, { scope.launch { animatedRadius.snapTo(it) } }, 0f..80f)
                     Spacer(Modifier.height(16.dp))
                 }
             }

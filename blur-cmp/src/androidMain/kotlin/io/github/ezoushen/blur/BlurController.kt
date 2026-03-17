@@ -44,6 +44,10 @@ class BlurController(
     companion object {
         /** Baseline downsample factor for consistent blur appearance */
         private const val BASELINE_DOWNSAMPLE = 4f
+
+        /** Radius at which the full configured downsample factor is reached.
+         *  Below this, downsample ramps linearly from 1.0 to avoid pixelation. */
+        private const val FULL_DOWNSAMPLE_RADIUS = 16f
     }
 
     private val bitmapPool = BitmapPool(maxPoolSize = 4)
@@ -151,9 +155,20 @@ class BlurController(
             return false
         }
 
+        // Scale downsample factor with radius: full resolution at radius=0,
+        // ramping to the configured factor as blur increases. This avoids
+        // visible pixelation jumps during radius animations and ensures
+        // radius=0 produces a sharp (1:1) pass-through.
+        val effectiveDownsample = if (config.radius <= 0f) {
+            1f
+        } else {
+            val t = (config.radius / FULL_DOWNSAMPLE_RADIUS).coerceIn(0f, 1f)
+            1f + (config.downsampleFactor - 1f) * t
+        }
+
         // Calculate scaled dimensions
-        val scaledWidth = (view.width / config.downsampleFactor).toInt().coerceAtLeast(1)
-        val scaledHeight = (view.height / config.downsampleFactor).toInt().coerceAtLeast(1)
+        val scaledWidth = (view.width / effectiveDownsample).toInt().coerceAtLeast(1)
+        val scaledHeight = (view.height / effectiveDownsample).toInt().coerceAtLeast(1)
 
         // Get or create capture bitmap
         if (captureBitmap == null ||
@@ -170,7 +185,7 @@ class BlurController(
         captureOutput.eraseColor(Color.TRANSPARENT)
 
         // Capture content
-        if (!capture.capture(view, source, captureOutput, config.downsampleFactor)) {
+        if (!capture.capture(view, source, captureOutput, effectiveDownsample)) {
             return false
         }
 
@@ -179,7 +194,7 @@ class BlurController(
 
         // Scale radius to maintain consistent blur appearance across different downsample factors
         // Using 4x as baseline: at 8x downsample, halve the radius; at 2x, double it
-        val scaledRadius = config.radius * (BASELINE_DOWNSAMPLE / config.downsampleFactor)
+        val scaledRadius = config.radius * (BASELINE_DOWNSAMPLE / effectiveDownsample)
 
         // Prepare blur algorithm
         if (!algorithm.prepare(context, scaledWidth, scaledHeight, scaledRadius)) {

@@ -47,6 +47,9 @@ class VariableBlurController(
     companion object {
         /** Baseline downsample factor for consistent blur appearance */
         private const val BASELINE_DOWNSAMPLE = 4f
+
+        /** Radius at which the full configured downsample factor is reached. */
+        private const val FULL_DOWNSAMPLE_RADIUS = 16f
     }
 
     private val bitmapPool = BitmapPool(maxPoolSize = 4)
@@ -172,9 +175,18 @@ class VariableBlurController(
             return false
         }
 
+        // Scale downsample factor with radius for smooth transitions
+        val maxRadius = currentGradient.maxRadius
+        val effectiveDownsample = if (maxRadius <= 0f) {
+            1f
+        } else {
+            val t = (maxRadius / FULL_DOWNSAMPLE_RADIUS).coerceIn(0f, 1f)
+            1f + (config.downsampleFactor - 1f) * t
+        }
+
         // Calculate scaled dimensions
-        val scaledWidth = (view.width / config.downsampleFactor).toInt().coerceAtLeast(1)
-        val scaledHeight = (view.height / config.downsampleFactor).toInt().coerceAtLeast(1)
+        val scaledWidth = (view.width / effectiveDownsample).toInt().coerceAtLeast(1)
+        val scaledHeight = (view.height / effectiveDownsample).toInt().coerceAtLeast(1)
 
         // Get or create capture bitmap
         if (captureBitmap == null ||
@@ -191,7 +203,7 @@ class VariableBlurController(
         captureOutput.eraseColor(Color.TRANSPARENT)
 
         // Capture content
-        if (!capture.capture(view, source, captureOutput, config.downsampleFactor)) {
+        if (!capture.capture(view, source, captureOutput, effectiveDownsample)) {
             return false
         }
 
@@ -199,7 +211,7 @@ class VariableBlurController(
         applyPreBlurTint(captureOutput)
 
         // Scale the gradient's max radius for downsample-independent appearance
-        val scaledMaxRadius = currentGradient.maxRadius * (BASELINE_DOWNSAMPLE / config.downsampleFactor)
+        val scaledMaxRadius = currentGradient.maxRadius * (BASELINE_DOWNSAMPLE / effectiveDownsample)
 
         // Prepare blur algorithm
         if (!algorithm.prepare(context, scaledWidth, scaledHeight, scaledMaxRadius)) {
