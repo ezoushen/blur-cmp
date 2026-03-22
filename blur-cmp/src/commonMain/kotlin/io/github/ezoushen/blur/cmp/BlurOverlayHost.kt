@@ -61,6 +61,13 @@ fun BlurOverlayHost(
  * @param modifier Modifier applied to the blur overlay container.
  * @param content Composable drawn sharp on top of the blur effect.
  */
+/**
+ * Sentinel for detecting backdrop-blur mode (BlurOverlay) vs explicit-background mode
+ * (BlurOverlayHost). On Android, RenderEffect can only blur the composable's own content,
+ * not what's behind it, so backdrop-blur must use the DecorView capture pipeline.
+ */
+internal val EmptyBackground: @Composable () -> Unit = {}
+
 @Composable
 fun BlurOverlay(
     state: BlurOverlayState,
@@ -69,6 +76,6 @@ fun BlurOverlay(
 ) = BlurOverlayHost(
     state = state,
     modifier = modifier,
-    background = {},
+    background = EmptyBackground,
     content = content,
 )

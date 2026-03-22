@@ -56,12 +56,19 @@ actual fun BlurOverlayHost(
         background()
 
         if (state.isEnabled && config.radius > 0f) {
-            // Tier 1: API 31+ uniform blur (any blend mode).
-            // Bypasses entire View-based pipeline — pure Compose graphicsLayer.
-            // Tint with non-Normal blend modes uses RenderEffect.createChainEffect
-            // to preserve the pipeline order: tint → blur (same as Kawase path).
+            // Tier 1: API 31+ uniform blur (any blend mode) — only when the caller
+            // provides an explicit background composable. BlurOverlay passes
+            // background = {} (empty) because it blurs the DecorView behind it,
+            // which requires the Kawase capture pipeline. RenderEffect can only blur
+            // the composable's OWN content, not what's behind it.
+            //
+            // We detect "has background" by checking if background is NOT the
+            // empty lambda singleton that BlurOverlay passes. Since Kotlin lambda
+            // identity is unreliable, we use a marker: BlurOverlay always passes
+            // the same empty lambda reference stored in EmptyBackground.
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-                config.gradient == null
+                config.gradient == null &&
+                background !== EmptyBackground
             ) {
                 RenderEffectBlurOverlay(state, background)
                 content()
