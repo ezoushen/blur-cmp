@@ -206,8 +206,17 @@ class RenderNodeBlurController {
             return
         }
 
+        // Scale radius to match Kawase pipeline visual output.
+        // The Kawase path blurs a downsampled image (default 4x), so a radius of R
+        // on a 1/4 resolution image produces visual blur ≈ R * downsampleFactor
+        // at full resolution. RenderEffect operates at full resolution, so we must
+        // multiply by the same factor for visual parity.
+        // Also matches iOS CAFilter gaussianBlur which uses the same Kawase-calibrated
+        // radius values from BlurOverlayConfig.
+        val effectiveRadius = radius * config.downsampleFactor
+
         val blurEffect = RenderEffect.createBlurEffect(
-            radius, radius, Shader.TileMode.CLAMP
+            effectiveRadius, effectiveRadius, Shader.TileMode.CLAMP
         )
 
         val hasTint = config.overlayColor != null || config.preBlurTintColor != null

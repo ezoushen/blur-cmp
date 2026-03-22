@@ -170,8 +170,10 @@ private fun RenderEffectBlurOverlay(
                 // Guard: RenderEffect.createBlurEffect(0,0) crashes on API 31+
                 // (Google Issue Tracker #241546169 — unfixed upstream).
                 val r = cfg.radius
+                // Scale radius to match Kawase visual output (see buildBlurRenderEffect)
+                val effectiveR = r * cfg.downsampleFactor
                 renderEffect = if (r > 0f) {
-                    buildBlurRenderEffect(r, cfg)?.asComposeRenderEffect()
+                    buildBlurRenderEffect(effectiveR, cfg)?.asComposeRenderEffect()
                 } else {
                     null
                 }
