@@ -43,6 +43,8 @@ class VariableOpenGLBlur : BlurAlgorithm {
     private var eglContext: EGLContext? = null
     private var eglSurface: EGLSurface? = null
     private var eglConfig: EGLConfig? = null
+    private var windowSurface: EGLSurface? = null
+    private var pendingSurface: android.view.Surface? = null
 
     private var downsampleProgram = 0
     private var upsampleProgram = 0
@@ -114,6 +116,11 @@ class VariableOpenGLBlur : BlurAlgorithm {
                 if (!initEGL()) return false
                 if (!initShaders()) return false
                 isInitialized = true
+                // Create deferred window surface if setSurface was called before EGL init
+                val pending = pendingSurface
+                if (pending != null && pending.isValid && windowSurface == null) {
+                    createWindowSurface(pending)
+                }
             }
 
             if (lastWidth != width || lastHeight != height) {
@@ -142,6 +149,25 @@ class VariableOpenGLBlur : BlurAlgorithm {
 
         if (!isInitialized) return input
 
+        // Handle radius=0: clear TextureView to transparent if active
+        if (radius <= 0 || gradient.maxRadius <= 0) {
+            if (hasOutputSurface()) {
+                try {
+                    EGL14.eglMakeCurrent(eglDisplay, windowSurface, windowSurface, eglContext)
+                    GLES20.glClearColor(0f, 0f, 0f, 0f)
+                    GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+                    EGL14.eglSwapBuffers(eglDisplay, windowSurface)
+                } finally {
+                    EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
+                }
+                return output
+            }
+            val pixels = IntArray(input.width * input.height)
+            input.getPixels(pixels, 0, input.width, 0, 0, input.width, input.height)
+            output.setPixels(pixels, 0, output.width, 0, 0, output.width, output.height)
+            return output
+        }
+
         try {
             makeCurrent()
 
@@ -167,10 +193,25 @@ class VariableOpenGLBlur : BlurAlgorithm {
             // Generate blur pyramid only for levels in the required range
             generateBlurPyramid(minLevel, maxLevel)
 
-            // Composite final result using gradient
+            // Composite final result using gradient (writes to outputFramebuffer)
             compositeWithGradient(gradient, minLevel, maxLevel)
 
-            // Read result
+            val useWindowSurface = hasOutputSurface()
+            if (useWindowSurface) {
+                // Blit the composite result to the window surface
+                try {
+                    EGL14.eglMakeCurrent(eglDisplay, windowSurface, windowSurface, eglContext)
+                    GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+                    GLES20.glViewport(0, 0, lastWidth, lastHeight)
+                    blitTexture(outputTexture, 0, lastWidth, lastHeight)
+                    EGL14.eglSwapBuffers(eglDisplay, windowSurface)
+                } finally {
+                    EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
+                }
+                return output
+            }
+
+            // Fallback: glReadPixels
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, outputFramebuffer)
             val buffer = ByteBuffer.allocateDirect(lastWidth * lastHeight * 4)
                 .order(ByteOrder.nativeOrder())
@@ -453,7 +494,7 @@ class VariableOpenGLBlur : BlurAlgorithm {
 
         val configAttribs = intArrayOf(
             EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
-            EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT,
+            EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT or EGL14.EGL_WINDOW_BIT,
             EGL14.EGL_RED_SIZE, 8,
             EGL14.EGL_GREEN_SIZE, 8,
             EGL14.EGL_BLUE_SIZE, 8,
@@ -489,6 +530,36 @@ class VariableOpenGLBlur : BlurAlgorithm {
     private fun makeCurrent(): Boolean {
         return EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
     }
+
+    /**
+     * Sets the output Surface for direct rendering. When set, the final composite
+     * result is blitted to this Surface via eglSwapBuffers instead of glReadPixels.
+     */
+    fun setSurface(surface: android.view.Surface?) {
+        if (pendingSurface === surface) return
+        // Destroy old window surface
+        val display = eglDisplay
+        val ws = windowSurface
+        if (display != null && ws != null && ws != EGL14.EGL_NO_SURFACE) {
+            EGL14.eglDestroySurface(display, ws)
+        }
+        windowSurface = null
+        pendingSurface = surface
+        // Create immediately if EGL is ready
+        if (isInitialized && surface != null && surface.isValid) {
+            createWindowSurface(surface)
+        }
+    }
+
+    private fun createWindowSurface(surface: android.view.Surface) {
+        val display = eglDisplay ?: return
+        val config = eglConfig ?: return
+        val attribs = intArrayOf(EGL14.EGL_NONE)
+        windowSurface = EGL14.eglCreateWindowSurface(display, config, surface, attribs, 0)
+    }
+
+    fun hasOutputSurface(): Boolean =
+        windowSurface != null && windowSurface != EGL14.EGL_NO_SURFACE
 
     private fun initShaders(): Boolean {
         downsampleProgram = createProgram(VERTEX_SHADER, DOWNSAMPLE_FRAGMENT_SHADER)
@@ -701,6 +772,13 @@ class VariableOpenGLBlur : BlurAlgorithm {
                 blitProgram = 0
             }
         }
+
+        val ws = windowSurface
+        if (ws != null && ws != EGL14.EGL_NO_SURFACE) {
+            EGL14.eglDestroySurface(eglDisplay, ws)
+        }
+        windowSurface = null
+        pendingSurface = null
 
         eglSurface?.let { EGL14.eglDestroySurface(eglDisplay, it) }
         eglContext?.let { EGL14.eglDestroyContext(eglDisplay, it) }

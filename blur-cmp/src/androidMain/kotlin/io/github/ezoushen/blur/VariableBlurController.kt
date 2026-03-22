@@ -166,6 +166,13 @@ class VariableBlurController(
         }
     }
 
+    fun setOutputSurface(surface: android.view.Surface?) {
+        algorithm.setSurface(surface)
+    }
+
+    fun hasOutputSurface(): Boolean =
+        algorithm.hasOutputSurface()
+
     /**
      * Updates the blur if needed.
      *
