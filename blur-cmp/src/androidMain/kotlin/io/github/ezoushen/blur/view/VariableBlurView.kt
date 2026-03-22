@@ -75,15 +75,15 @@ class VariableBlurView @JvmOverloads constructor(
         override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
             blurSurface?.release()
             blurSurface = Surface(st)
-            blurController?.setOutputSurface(blurSurface)
+            blurController?.setOutputSurface(blurSurface, w, h)
         }
         override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
             blurSurface?.release()
             blurSurface = Surface(st)
-            blurController?.setOutputSurface(blurSurface)
+            blurController?.setOutputSurface(blurSurface, w, h)
         }
         override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
-            blurController?.setOutputSurface(null)
+            blurController?.setOutputSurface(null, 0, 0)
             blurSurface?.release()
             blurSurface = null
             return true

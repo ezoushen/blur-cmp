@@ -147,8 +147,16 @@ class HardwareBufferCapture : ContentCapture {
                         android.graphics.ColorSpace.get(android.graphics.ColorSpace.Named.SRGB)
                     ) ?: return false
 
-                    val outputCanvas = Canvas(output)
-                    outputCanvas.drawBitmap(hardwareBitmap, 0f, 0f, null)
+                    // Hardware Bitmap cannot be drawn to a software Canvas.
+                    // Copy pixels via intermediate mutable bitmap.
+                    val mutableCopy = hardwareBitmap.copy(Bitmap.Config.ARGB_8888, true)
+                        ?: return false
+                    try {
+                        val outputCanvas = Canvas(output)
+                        outputCanvas.drawBitmap(mutableCopy, 0f, 0f, null)
+                    } finally {
+                        mutableCopy.recycle()
+                    }
                     return true
                 } finally {
                     hardwareBuffer.close()

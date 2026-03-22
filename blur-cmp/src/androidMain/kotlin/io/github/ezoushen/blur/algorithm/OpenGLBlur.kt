@@ -51,6 +51,8 @@ class OpenGLBlur : BlurAlgorithm {
     private var eglConfig: EGLConfig? = null
     private var windowSurface: EGLSurface? = null
     private var pendingSurface: android.view.Surface? = null
+    private var surfaceWidth: Int = 0
+    private var surfaceHeight: Int = 0
 
     private var downsampleProgram = 0
     private var upsampleProgram = 0
@@ -218,14 +220,18 @@ class OpenGLBlur : BlurAlgorithm {
             val targetHeight = if (i == 0) lastHeight else (lastHeight shr i)
 
             if (i == 0 && renderToWindowSurface) {
-                // Last pass: render directly to window surface's default FBO
+                // Last pass: render directly to window surface's default FBO.
+                // Viewport must match TextureView size so blur upscales to fill.
                 EGL14.eglMakeCurrent(eglDisplay, windowSurface, windowSurface, eglContext)
                 GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+                val vw = if (surfaceWidth > 0) surfaceWidth else targetWidth
+                val vh = if (surfaceHeight > 0) surfaceHeight else targetHeight
+                GLES20.glViewport(0, 0, vw, vh)
             } else {
                 val targetFb = if (i == 0) fbs[0] else fbs[i]
                 GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, targetFb)
+                GLES20.glViewport(0, 0, targetWidth, targetHeight)
             }
-            GLES20.glViewport(0, 0, targetWidth, targetHeight)
 
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, currentTexture)
@@ -319,7 +325,7 @@ class OpenGLBlur : BlurAlgorithm {
      * Sets the output Surface for direct rendering. When set, the final blur
      * pass renders to this Surface via eglSwapBuffers instead of glReadPixels.
      */
-    fun setSurface(surface: android.view.Surface?) {
+    fun setSurface(surface: android.view.Surface?, width: Int = 0, height: Int = 0) {
         if (pendingSurface === surface) return
         // Destroy old window surface
         val display = eglDisplay
@@ -329,6 +335,8 @@ class OpenGLBlur : BlurAlgorithm {
         }
         windowSurface = null
         pendingSurface = surface
+        surfaceWidth = width
+        surfaceHeight = height
         // Create immediately if EGL is ready
         if (isInitialized && surface != null && surface.isValid) {
             createWindowSurface(surface)

@@ -45,6 +45,8 @@ class VariableOpenGLBlur : BlurAlgorithm {
     private var eglConfig: EGLConfig? = null
     private var windowSurface: EGLSurface? = null
     private var pendingSurface: android.view.Surface? = null
+    private var surfaceWidth: Int = 0
+    private var surfaceHeight: Int = 0
 
     private var downsampleProgram = 0
     private var upsampleProgram = 0
@@ -202,8 +204,12 @@ class VariableOpenGLBlur : BlurAlgorithm {
                 try {
                     EGL14.eglMakeCurrent(eglDisplay, windowSurface, windowSurface, eglContext)
                     GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-                    GLES20.glViewport(0, 0, lastWidth, lastHeight)
-                    blitTexture(outputTexture, 0, lastWidth, lastHeight)
+                    // Viewport must match the TextureView's actual size, not the
+                    // downsampled blur size. The blit shader scales the texture.
+                    val vw = if (surfaceWidth > 0) surfaceWidth else lastWidth
+                    val vh = if (surfaceHeight > 0) surfaceHeight else lastHeight
+                    GLES20.glViewport(0, 0, vw, vh)
+                    blitTexture(outputTexture, 0, vw, vh)
                     EGL14.eglSwapBuffers(eglDisplay, windowSurface)
                 } finally {
                     EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
@@ -535,7 +541,7 @@ class VariableOpenGLBlur : BlurAlgorithm {
      * Sets the output Surface for direct rendering. When set, the final composite
      * result is blitted to this Surface via eglSwapBuffers instead of glReadPixels.
      */
-    fun setSurface(surface: android.view.Surface?) {
+    fun setSurface(surface: android.view.Surface?, width: Int = 0, height: Int = 0) {
         if (pendingSurface === surface) return
         // Destroy old window surface
         val display = eglDisplay
@@ -545,6 +551,8 @@ class VariableOpenGLBlur : BlurAlgorithm {
         }
         windowSurface = null
         pendingSurface = surface
+        surfaceWidth = width
+        surfaceHeight = height
         // Create immediately if EGL is ready
         if (isInitialized && surface != null && surface.isValid) {
             createWindowSurface(surface)

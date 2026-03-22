@@ -166,8 +166,8 @@ class VariableBlurController(
         }
     }
 
-    fun setOutputSurface(surface: android.view.Surface?) {
-        algorithm.setSurface(surface)
+    fun setOutputSurface(surface: android.view.Surface?, width: Int = 0, height: Int = 0) {
+        algorithm.setSurface(surface, width, height)
     }
 
     fun hasOutputSurface(): Boolean =

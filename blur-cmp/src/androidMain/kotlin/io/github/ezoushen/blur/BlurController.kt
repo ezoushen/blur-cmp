@@ -148,8 +148,8 @@ class BlurController(
         }
     }
 
-    fun setOutputSurface(surface: android.view.Surface?) {
-        (algorithm as? OpenGLBlur)?.setSurface(surface)
+    fun setOutputSurface(surface: android.view.Surface?, width: Int = 0, height: Int = 0) {
+        (algorithm as? OpenGLBlur)?.setSurface(surface, width, height)
     }
 
     fun hasOutputSurface(): Boolean =
