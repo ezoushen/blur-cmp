@@ -175,20 +175,11 @@ class BlurController(
 
         val requested = config.pipelineStrategy
         val resolved = when (requested) {
-            BlurPipelineStrategy.AUTO -> {
-                val glBlur = algorithm as? OpenGLBlur
-                when {
-                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
-                        BlurPipelineStrategy.RENDER_EFFECT
-                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-                        glBlur?.hasEglImageSupport() == true ->
-                        BlurPipelineStrategy.EGL_IMAGE
-                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                        glBlur?.hasExternalOesSupport() == true ->
-                        BlurPipelineStrategy.SURFACE_TEXTURE
-                    else -> BlurPipelineStrategy.LEGACY
-                }
-            }
+            // AUTO: use LEGACY for Kawase pipeline. RecordingCanvas capture +
+            // TextureView output is already fast. EGLImage/SurfaceTexture are
+            // available as opt-in for testing but per-frame EGLImage overhead
+            // exceeds the crossing cost at downsampled resolutions.
+            BlurPipelineStrategy.AUTO -> BlurPipelineStrategy.LEGACY
             else -> requested
         }
         resolvedStrategy = resolved

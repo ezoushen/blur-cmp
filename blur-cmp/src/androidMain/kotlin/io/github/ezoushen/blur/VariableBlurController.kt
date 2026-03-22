@@ -191,19 +191,9 @@ class VariableBlurController(
 
         val requested = config.pipelineStrategy
         val resolved = when (requested) {
-            BlurPipelineStrategy.AUTO -> {
-                when {
-                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
-                        BlurPipelineStrategy.RENDER_EFFECT
-                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-                        algorithm.hasEglImageSupport() ->
-                        BlurPipelineStrategy.EGL_IMAGE
-                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                        algorithm.hasExternalOesSupport() ->
-                        BlurPipelineStrategy.SURFACE_TEXTURE
-                    else -> BlurPipelineStrategy.LEGACY
-                }
-            }
+            // AUTO: use LEGACY for Kawase pipeline. EGLImage/SurfaceTexture
+            // are available as opt-in for testing.
+            BlurPipelineStrategy.AUTO -> BlurPipelineStrategy.LEGACY
             else -> requested
         }
         resolvedStrategy = resolved
