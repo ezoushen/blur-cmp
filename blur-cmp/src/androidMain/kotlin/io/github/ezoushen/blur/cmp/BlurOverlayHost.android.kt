@@ -1,7 +1,11 @@
 package io.github.ezoushen.blur.cmp
 
+import android.graphics.RenderEffect
+import android.graphics.Shader
+import android.os.Build
 import android.view.View
 import android.widget.FrameLayout
+import androidx.annotation.RequiresApi
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -13,16 +17,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.ComposeView
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.viewinterop.AndroidView
-import android.graphics.RenderEffect
-import android.graphics.Shader
-import android.os.Build
-import androidx.annotation.RequiresApi
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
 import io.github.ezoushen.blur.view.BlurView
 import io.github.ezoushen.blur.view.VariableBlurView
 
@@ -63,7 +63,7 @@ actual fun BlurOverlayHost(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
                 config.gradient == null && !hasNonNormalTint
             ) {
-                RenderEffectBlurOverlay(state, config, background)
+                RenderEffectBlurOverlay(state, background)
                 content()
                 return@Box
             }
@@ -145,19 +145,19 @@ actual fun BlurOverlayHost(
 @Composable
 private fun RenderEffectBlurOverlay(
     state: BlurOverlayState,
-    config: BlurOverlayConfig,
     background: @Composable () -> Unit,
 ) {
+    val config = state.config
     // Blurred background layer.
     // Lambda graphicsLayer: updates properties without recomposition.
-    // Pattern matches BlurModifier.kt:41-48.
+    // Pattern matches blurBehind() in BlurModifier.kt.
     Box(
         modifier = Modifier
             .fillMaxSize()
             .graphicsLayer {
                 // Guard: RenderEffect.createBlurEffect(0,0) crashes on API 31+
                 // (Google Issue Tracker #241546169 — unfixed upstream).
-                val r = config.radius
+                val r = state.config.radius
                 renderEffect = if (r > 0f) {
                     RenderEffect.createBlurEffect(r, r, Shader.TileMode.CLAMP)
                         .asComposeRenderEffect()
@@ -171,9 +171,9 @@ private fun RenderEffectBlurOverlay(
     }
 
     // Tint overlay — SEPARATE from the blurred graphicsLayer so tint stays crisp.
-    // Matches BlurModifier.kt:50-55 pattern (tint drawn AFTER blur, on top).
+    // Matches blurBehind() in BlurModifier.kt pattern (tint drawn AFTER blur, on top).
     val tintColor = config.tintColor
-    if (tintColor != null && state.alpha > 0f) {
+    if (tintColor != null) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
