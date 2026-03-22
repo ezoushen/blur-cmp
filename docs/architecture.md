@@ -32,30 +32,68 @@ The two platforms use **fundamentally different strategies**:
 
 ## 2. Android Pipeline
 
-### 2.0 RenderEffect Fast Path (API 31+, uniform blur)
+### 2.0 RenderNode + RenderEffect Path (API 31+, uniform blur)
 
-When conditions are met (API 31+, no gradient, Normal blend mode tint),
-BlurOverlayHost bypasses the entire View-based pipeline:
+On API 31+, uniform blur uses `RenderNodeBlurController` which replaces
+the software capture + OpenGL Kawase pipeline with hardware-accelerated
+RenderNode recording + RenderEffect blur:
 
 ```
-  background()                    ← unblurred (always rendered at Box root)
-  Box(graphicsLayer {
-    renderEffect = BlurEffect     ← GPU blur on RenderThread
-    alpha = state.alpha           ← GPU alpha modulation
-  }) {
-    background()                  ← re-rendered inside blurred layer
-  }
-  Box(tint overlay)               ← crisp tint, outside blur layer
-  content()                       ← sharp, on top
+  ┌─── BlurView.onPreDraw (RenderNodeBlurController.update) ─────┐
+  │                                                               │
+  │  1. CAPTURE via RecordingCanvas (NOT software canvas)         │
+  │     captureNode.beginRecording(w, h) → RecordingCanvas        │
+  │     decorView.draw(recordingCanvas)                           │
+  │       └─ each child: drawRenderNode(child.renderNode)         │
+  │          records POINTERS to existing display lists (~0ms)    │
+  │     captureNode.endRecording()                                │
+  │                                                               │
+  │  2. BLUR via RenderEffect (GPU, on RenderThread)              │
+  │     captureNode.setRenderEffect(                              │
+  │       RenderEffect.createBlurEffect(r, r, CLAMP)             │
+  │     )                                                         │
+  │     Tint via createChainEffect:                               │
+  │       Non-Normal: blur(tint(source)) — pre-blur tint          │
+  │       Normal:     tint(blur(source)) — post-blur overlay      │
+  │                                                               │
+  │  3. RASTERIZE via HardwareRenderer → HardwareBuffer           │
+  │     Severs the RenderNode graph (prevents circular ref)       │
+  │     Bitmap.wrapHardwareBuffer() → GPU-resident bitmap         │
+  │                                                               │
+  └───────────────────────────────────────────────────────────────┘
 
-  CPU-GPU crossings: 0
-  CPU involvement: zero pixel access
+  ┌─── BlurView.onDraw ──────────────────────────────────────────┐
+  │  canvas.drawBitmap(hardwareBitmap)                            │
+  │  HWUI draws GPU bitmap without re-upload                      │
+  └───────────────────────────────────────────────────────────────┘
+
+  CPU-GPU crossings: 0 for capture, 0 for blur, 0 for render
+  Software rasterization: eliminated (was 2-5ms, now ~0ms)
 ```
+
+**Performance evidence (Pixel 8 Pro API 35 emulator):**
+
+```
+  ┌─────────────────────────┬───────────┬───────────┐
+  │ Metric                  │ Old Kawase│ RenderNode│
+  ├─────────────────────────┼───────────┼───────────┤
+  │ Draw→Complete avg       │ 23.88 ms  │ 12.85 ms  │
+  │ Draw→Complete min       │ 17.06 ms  │  6.75 ms  │
+  │ Janky frames            │ 33.21%    │  2.54%    │
+  │ Slow UI thread frames   │ 93        │ 16        │
+  │ 50th percentile         │ 48 ms     │ 25 ms     │
+  │ 90th percentile         │ 48 ms     │ 32 ms     │
+  └─────────────────────────┴───────────┴───────────┘
+  ~46% faster draw time, ~13x fewer janky frames
+```
+
+**BlurOverlayHost with explicit background** also gets an optimization:
+uses Compose `graphicsLayer { renderEffect = ... }` directly — no View
+pipeline at all. Supports all blend modes via `createChainEffect()`.
 
 Falls through to Kawase pipeline (Section 2.1+) when:
 - API < 31
-- Gradient/variable blur configured
-- Non-Normal blend mode tint (requires pre-blur bitmap access)
+- Gradient/variable blur (no RenderEffect mask support)
 
 ### 2.1 Component Stack
 

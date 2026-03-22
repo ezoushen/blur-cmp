@@ -233,21 +233,51 @@ val captureHwBuffer = image.hardwareBuffer  // GPU-resident, zero CPU access
 - [EGL_ANDROID_image_hardware_buffer](https://registry.khronos.org/EGL/extensions/ANDROID/EGL_ANDROID_image_hardware_buffer.txt) — extension spec
 - [Glide Hardware Bitmaps](https://bumptech.github.io/glide/doc/hardwarebitmaps.html) — HWUI zero-copy confirmation
 
-## Status (2026-03-22)
+## Status (2026-03-23)
 
 ### Implemented
-- **Tier 1: RenderEffect Fast Path (API 31+)** — Merged in `feat/android-blur-zero-copy` branch.
-  Pure Compose `graphicsLayer` with `RenderEffect.createBlurEffect()`. Zero CPU-GPU copies.
-  Applies to uniform blur with Normal blend mode tint only.
+
+**RenderNodeBlurController (API 31+, uniform blur) — `feat/android-blur-zero-copy` branch**
+
+Replaces the entire software capture + OpenGL Kawase pipeline with:
+1. `decorView.draw(RecordingCanvas)` — records display list references (~0ms vs 2-5ms software)
+2. `captureNode.setRenderEffect(blurEffect)` — GPU Gaussian blur on RenderThread
+3. `HardwareRenderer` → `ImageReader` → `HardwareBuffer` — GPU rasterization (severs RenderNode graph)
+4. `Bitmap.wrapHardwareBuffer()` → `canvas.drawBitmap()` — zero-copy GPU bitmap
+
+Also supports all blend modes via `RenderEffect.createChainEffect()`:
+- Non-Normal (ColorDodge, Overlay, etc.): `blur(tint(source))` — pre-blur tint
+- Normal: `tint(blur(source))` — post-blur overlay
+
+**BlurOverlayHost with explicit background (API 31+)**
+Uses pure Compose `graphicsLayer { renderEffect = ... }` — no View pipeline at all.
+
+#### Measured Performance (Pixel 8 Pro API 35 emulator)
+
+```
+┌─────────────────────────┬────────────┬─────────────┬─────────┐
+│ Metric                  │ Old Kawase │ RenderNode  │ Change  │
+├─────────────────────────┼────────────┼─────────────┼─────────┤
+│ Draw→Complete avg       │ 23.88 ms   │ 12.85 ms    │ -46%    │
+│ Draw→Complete min       │ 17.06 ms   │  6.75 ms    │ -60%    │
+│ Janky frames            │ 33.21%     │  2.54%      │ -13x    │
+│ Slow UI thread frames   │ 93/280     │ 16/629      │ -12x    │
+│ 50th percentile         │ 48 ms      │ 25 ms       │ -48%    │
+│ 90th percentile         │ 48 ms      │ 32 ms       │ -33%    │
+└─────────────────────────┴────────────┴─────────────┴─────────┘
+```
+
+#### What was eliminated
+- Software `DecorView.draw(softwareCanvas)` — the 2-5ms bottleneck
+- OpenGL EGL context + Dual Kawase shader pipeline
+- `glReadPixels` readback
+- HWUI texture re-upload from software bitmap
+- `isLive` fade-direction gating (dirty flag issue gone with RecordingCanvas)
+
+### Still using Kawase
+- Variable/gradient blur — no RenderEffect equivalent for per-pixel radius
+- API < 31 — RenderNode/RenderEffect not available
 
 ### Deferred
-- **Tier 2: HardwareBuffer FBO Output (API 29+)** — Deferred based on review findings:
-  - EGL functions (`eglGetNativeClientBufferANDROID`, `glEGLImageTargetTexture2DOES`) are NDK-only, not callable from Kotlin/JVM
-  - At 4x downsample, `glReadPixels` costs only ~0.2ms — not the actual bottleneck
-  - GPU driver bugs on Adreno (double-free in `eglDestroyImageKHR`) and Mali (crashes in `EGLImageTargetTexture2DOES`)
-  - Would add ~500 LOC + 4-6MB RAM per BlurView for ~0.3ms savings
-
-- **Tier 3: RenderNode Capture (API 29+)** — Deferred. Blocked on Tier 2.
-  Also: `HardwareRenderer` ANR on Mali GPUs (Google #274207636), breaks under memory pressure on Android 14 (Flutter #147578).
-
-- **Controller Duplication Refactor** — Orthogonal to optimization. Separate PR.
+- **HardwareBuffer FBO Output (API 29+)** — NDK-only EGL functions, GPU driver bugs, premature
+- **Controller Duplication Refactor** — Orthogonal. Separate PR.
