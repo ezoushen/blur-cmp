@@ -75,7 +75,7 @@ Three distinct pipelines selected by API level and blur type.
 
 ## Pipeline B: API 29+ Kawase Blur (BlurController + TextureView)
 
-**1 CPU↔GPU crossing (capture bitmap → GL texture upload).**
+**2 CPU↔GPU crossings (HW bitmap → mutable copy, then GL texture upload).**
 
 ```
      CPU (Main Thread)              │  GPU
@@ -101,8 +101,8 @@ Three distinct pipelines selected by API level and blur type.
   │    Buffer(buf)               │   │
   │                              │   │
   │  mutableBitmap = hwBitmap    │   │
-  │    .copy(ARGB_8888, true)    │   │    ← GPU→CPU copy ①
-  │       │                      │   │      (only crossing in pipeline)
+  │    .copy(ARGB_8888, true)    │   │    ← GPU→CPU ① copy
+  │       │                      │   │
   │       ▼                      │   │
   │  mutable Bitmap (CPU)        │   │
   │                              │   │
@@ -115,9 +115,9 @@ Three distinct pipelines selected by API level and blur type.
   │  ── BLUR (OpenGL Kawase) ──  │   │
   │                              │   │
   │  eglMakeCurrent(pbuffer)     │   │
-  │  texImage2D(mutableBitmap)──────►│  Upload to GL texture
-  │                              │   │    (CPU→GPU, but same ① crossing
-  │  performBlurPasses(          │   │     since the copy above was GPU→CPU)
+  │  texImage2D(mutableBitmap)──────►│  CPU→GPU ② upload to GL texture
+  │                              │   │
+  │  performBlurPasses(          │   │
   │    fbs, texs, iters, offset, │   │
   │    renderToWindowSurface=true│   │
   │  )                           │   │
@@ -151,10 +151,11 @@ Three distinct pipelines selected by API level and blur type.
   │                              │   │
   └──────────────────────────────┘   │
                                      │
-  Crossings: 1                       │
+  Crossings: 2                       │
     ① HW Bitmap → mutable Bitmap     │
-      (GPU→CPU, needed for           │
-       texImage2D + pre-blur tint)   │
+      (GPU→CPU copy for tint + GL)   │
+    ② texImage2D                      │
+      (CPU→GPU upload to GL texture) │
 ```
 
 ---
@@ -239,8 +240,9 @@ Three distinct pipelines selected by API level and blur type.
   │          │ (~0ms)    │ (GPU)     │ (zero-copy│                        │
   │          │           │           │  wrap)    │                        │
   ├──────────┼───────────┼───────────┼───────────┼────────────────────────┤
-  │ API 29+  │ Recording │ OpenGL    │ TextureView│ 1                     │
-  │ Kawase   │ Canvas    │ Kawase    │ Surface   │ HW Bitmap→mutable only │
+  │ API 29+  │ Recording │ OpenGL    │ TextureView│ 2                     │
+  │ Kawase   │ Canvas    │ Kawase    │ Surface   │ HW Bitmap→mutable +   │
+  │          │ + HW      │ (GPU)     │ (GPU-GPU  │ texImage2D             │
   │          │ + HW      │ (GPU)     │ (GPU-GPU  │                        │
   │          │ Renderer  │           │  present) │                        │
   ├──────────┼───────────┼───────────┼───────────┼────────────────────────┤
@@ -251,5 +253,5 @@ Three distinct pipelines selected by API level and blur type.
   └──────────┴───────────┴───────────┴───────────┴────────────────────────┘
 
   Before this branch: 4 crossings on ALL API levels
-  After:              0 / 1 / 2 depending on API level
+  After:              0 / 2 / 2 depending on API level
 ```

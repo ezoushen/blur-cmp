@@ -296,9 +296,9 @@ display list pointers instead of software-rendering pixels. Eliminates the
 │ 31+      │ RecordingCanvas → RenderEffect           │   4    │   0    │
 │ uniform  │   → HardwareRenderer → HW Bitmap         │        │        │
 ├──────────┼──────────────────────────────────────────┼────────┼────────┤
-│ 29+      │ RecordingCanvas → HardwareRenderer        │   4    │   1    │
+│ 29+      │ RecordingCanvas → HardwareRenderer        │   4    │   2    │
 │ Kawase   │   → HW Bitmap → mutable Bitmap  ①CPU    │        │        │
-│          │   → texImage2D → Kawase                  │        │        │
+│          │   → texImage2D ②GPU → Kawase             │        │        │
 │          │   → last pass to TextureView Surface     │        │        │
 ├──────────┼──────────────────────────────────────────┼────────┼────────┤
 │ < 29     │ software capture  ①CPU → texImage2D ②GPU │   4    │   2    │
