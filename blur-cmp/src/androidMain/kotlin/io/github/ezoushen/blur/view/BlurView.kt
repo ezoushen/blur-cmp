@@ -6,8 +6,11 @@ import android.content.ContextWrapper
 import android.graphics.Canvas
 import android.graphics.Color
 import android.os.Build
+import android.graphics.SurfaceTexture
 import android.util.AttributeSet
 import android.util.TypedValue
+import android.view.Surface
+import android.view.TextureView
 import android.view.View
 import android.view.ViewTreeObserver
 import android.widget.FrameLayout
@@ -62,6 +65,28 @@ class BlurView @JvmOverloads constructor(
 
     // For tracking rendering state to prevent infinite recursion
     private var isRendering = false
+    private var blurTextureView: TextureView? = null
+    private var blurSurface: Surface? = null
+
+    private val surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+        override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+            blurSurface?.release()
+            blurSurface = Surface(st)
+            blurController?.setOutputSurface(blurSurface)
+        }
+        override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
+            blurSurface?.release()
+            blurSurface = Surface(st)
+            blurController?.setOutputSurface(blurSurface)
+        }
+        override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+            blurController?.setOutputSurface(null)
+            blurSurface?.release()
+            blurSurface = null
+            return true
+        }
+        override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+    }
 
     private val preDrawListener = ViewTreeObserver.OnPreDrawListener {
         if (isBlurEnabled && isLive && isShown) {
@@ -100,6 +125,14 @@ class BlurView @JvmOverloads constructor(
             renderNodeController = RenderNodeBlurController()
         } else {
             blurController = BlurController(context, blurConfig)
+        }
+
+        if (!useRenderNode) {
+            blurTextureView = TextureView(context).also { tv ->
+                tv.isOpaque = false
+                tv.surfaceTextureListener = surfaceTextureListener
+                addView(tv, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+            }
         }
     }
 
@@ -389,6 +422,10 @@ class BlurView @JvmOverloads constructor(
         decorView?.viewTreeObserver?.removeOnPreDrawListener(preDrawListener)
 
         // Release resources
+        blurController?.setOutputSurface(null)
+        blurSurface?.release()
+        blurSurface = null
+
         if (useRenderNode) {
             renderNodeController?.release()
         } else {
@@ -431,7 +468,7 @@ class BlurView @JvmOverloads constructor(
             try {
                 if (useRenderNode) {
                     renderNodeController?.draw(canvas)
-                } else {
+                } else if (blurController?.hasOutputSurface() != true) {
                     blurController?.draw(canvas)
                 }
             } finally {

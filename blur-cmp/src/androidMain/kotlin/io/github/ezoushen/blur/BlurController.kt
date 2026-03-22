@@ -10,6 +10,7 @@ import android.os.Build
 import android.view.View
 import io.github.ezoushen.blur.algorithm.BlurAlgorithm
 import io.github.ezoushen.blur.algorithm.BlurAlgorithmFactory
+import io.github.ezoushen.blur.algorithm.OpenGLBlur
 import io.github.ezoushen.blur.capture.ContentCapture
 import io.github.ezoushen.blur.capture.DecorViewCapture
 import io.github.ezoushen.blur.capture.HardwareBufferCapture
@@ -146,6 +147,13 @@ class BlurController(
             is DecorViewCapture -> capture.removeExcludedView(view)
         }
     }
+
+    fun setOutputSurface(surface: android.view.Surface?) {
+        (algorithm as? OpenGLBlur)?.setSurface(surface)
+    }
+
+    fun hasOutputSurface(): Boolean =
+        (algorithm as? OpenGLBlur)?.hasOutputSurface() == true
 
     /**
      * Updates the blur if needed.
