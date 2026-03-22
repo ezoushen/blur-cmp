@@ -1,11 +1,19 @@
 package io.github.ezoushen.blur
 
+import android.graphics.Bitmap
 import android.graphics.BlendMode as AndroidBlendMode
 import android.graphics.BlendModeColorFilter
 import android.graphics.Canvas
+import android.graphics.ColorSpace
+import android.graphics.HardwareRenderer
+import android.graphics.Paint
+import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.graphics.RenderEffect
 import android.graphics.RenderNode
 import android.graphics.Shader
+import android.hardware.HardwareBuffer
+import android.media.ImageReader
 import android.os.Build
 import android.view.View
 import androidx.annotation.RequiresApi
@@ -13,16 +21,21 @@ import androidx.annotation.RequiresApi
 /**
  * GPU-resident blur controller for API 31+ using RenderNode + RenderEffect.
  *
- * Replaces the software capture + OpenGL Kawase pipeline with:
- *   decorView.draw(RecordingCanvas) -> captureNode.setRenderEffect(blur) -> canvas.drawRenderNode
+ * Pipeline:
+ *   1. decorView.draw(RecordingCanvas) — records display list refs (~0ms vs 2-5ms software)
+ *   2. HardwareRenderer renders captureNode → ImageReader → HardwareBuffer
+ *   3. Bitmap.wrapHardwareBuffer — zero-copy GPU-resident bitmap
+ *   4. canvas.drawBitmap in BlurView.onDraw — HWUI draws without re-upload
  *
- * Key advantages over [BlurController]:
- * - Zero CPU pixel access (no software canvas, no bitmap, no glReadPixels)
- * - No dirty flag side effects (RecordingCanvas path preserves PFLAG state correctly)
- * - No OpenGL context management
- * - Skia handles downsampling internally
+ * The HardwareRenderer step is needed to break the circular RenderNode reference:
+ * captureNode → decorView tree → BlurView → drawRenderNode(captureNode) → cycle.
+ * By rasterizing captureNode to a HardwareBuffer, we sever the graph.
  *
- * Falls back to [BlurController] when unavailable (API < 31).
+ * Compared to [BlurController]:
+ * - Capture: RecordingCanvas (GPU draw ops) vs software Canvas (CPU rasterization)
+ * - Blur: RenderEffect on GPU RenderThread vs OpenGL Kawase
+ * - Output: Hardware Bitmap (GPU-resident) vs software Bitmap + re-upload
+ * - Dirty flags: No side effects (no PFLAG_DIRTY_MASK clearing)
  */
 @RequiresApi(Build.VERSION_CODES.S)
 class RenderNodeBlurController {
@@ -40,9 +53,19 @@ class RenderNodeBlurController {
     private val captureNode = RenderNode("BlurCapture")
     private val excludedViews = mutableListOf<View>()
 
-    // Location arrays reused across frames
+    // HardwareRenderer pipeline to rasterize the blurred captureNode
+    private var imageReader: ImageReader? = null
+    private var hardwareRenderer: HardwareRenderer? = null
+    private var outputBitmap: Bitmap? = null
+
+    private var lastWidth = 0
+    private var lastHeight = 0
+
     private val sourceLocation = IntArray(2)
     private val blurViewLocation = IntArray(2)
+    private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val srcRect = Rect()
+    private val dstRect = Rect()
 
     fun init(blurView: View, sourceView: View) {
         this.blurView = blurView
@@ -67,26 +90,13 @@ class RenderNodeBlurController {
     fun isCapturing(): Boolean = isCurrentlyCapturing
 
     fun addExcludedView(view: View) {
-        if (view !in excludedViews) {
-            excludedViews.add(view)
-        }
+        if (view !in excludedViews) excludedViews.add(view)
     }
 
     fun removeExcludedView(view: View) {
         excludedViews.remove(view)
     }
 
-    /**
-     * Updates the blur capture. Called from onPreDraw.
-     *
-     * Records the source view's display list into [captureNode] using a
-     * RecordingCanvas. Each child with a valid display list emits a single
-     * drawRenderNode pointer -- no software rasterization occurs.
-     *
-     * Then applies RenderEffect blur to the capture node.
-     *
-     * @return true if the blur was updated and the view should be invalidated
-     */
     fun update(): Boolean {
         if (!isInitialized) return false
 
@@ -102,11 +112,27 @@ class RenderNodeBlurController {
         val offsetX = (blurViewLocation[0] - sourceLocation[0]).toFloat()
         val offsetY = (blurViewLocation[1] - sourceLocation[1]).toFloat()
 
-        // Hide excluded views and self during capture
+        // Ensure HardwareRenderer pipeline is sized correctly
+        if (view.width != lastWidth || view.height != lastHeight) {
+            releaseRendererResources()
+            if (!initRendererResources(view.width, view.height)) return false
+            lastWidth = view.width
+            lastHeight = view.height
+        }
+
+        val reader = imageReader ?: return false
+        val renderer = hardwareRenderer ?: return false
+
+        // Hide BlurView + excluded views during capture to prevent
+        // them from appearing in the blurred output.
         val hiddenViews = mutableListOf<View>()
         try {
             isCurrentlyCapturing = true
 
+            if (view.visibility == View.VISIBLE) {
+                view.visibility = View.INVISIBLE
+                hiddenViews.add(view)
+            }
             for (excluded in excludedViews) {
                 if (excluded.visibility == View.VISIBLE) {
                     excluded.visibility = View.INVISIBLE
@@ -114,36 +140,59 @@ class RenderNodeBlurController {
                 }
             }
 
-            // Record source view into capture RenderNode.
-            // The RecordingCanvas records display list references (pointers to
-            // existing RenderNodes), NOT software pixels. This is near-zero cost.
-            captureNode.setPosition(0, 0, source.width, source.height)
-            val canvas = captureNode.beginRecording(source.width, source.height)
+            // Record source view into captureNode using RecordingCanvas.
+            // This records display list references (pointers), not pixels.
+            captureNode.setPosition(0, 0, view.width, view.height)
+            val canvas = captureNode.beginRecording(view.width, view.height)
             try {
+                canvas.translate(-offsetX, -offsetY)
                 source.draw(canvas)
             } finally {
                 captureNode.endRecording()
             }
         } finally {
-            // Restore visibility
             for (hidden in hiddenViews) {
                 hidden.visibility = View.VISIBLE
             }
             isCurrentlyCapturing = false
         }
 
-        // Apply blur + tint as chained RenderEffect
+        // Apply blur + tint as RenderEffect
         applyRenderEffect()
 
-        // Set translation so the captured content aligns with the blur view's position
-        captureNode.setTranslationX(-offsetX)
-        captureNode.setTranslationY(-offsetY)
-
-        // API 31 bug workaround: RenderNode doesn't refresh when only
-        // translation changes. Re-applying RenderEffect forces a redraw.
-        // Fixed on API 32+. (Haze #77, BlurView 3.2.0)
+        // API 31 bug: RenderNode doesn't refresh on property-only changes.
+        // Re-apply RenderEffect to force redraw. (Haze #77)
         if (Build.VERSION.SDK_INT == Build.VERSION_CODES.S) {
             applyRenderEffect()
+        }
+
+        // Rasterize the blurred captureNode via HardwareRenderer → ImageReader.
+        // This severs the RenderNode graph (no circular reference in BlurView's
+        // display list) while keeping everything on the GPU.
+        renderer.setContentRoot(captureNode)
+        val syncResult = renderer.createRenderRequest()
+            .setWaitForPresent(true)
+            .syncAndDraw()
+
+        if (syncResult != HardwareRenderer.SYNC_OK &&
+            syncResult != HardwareRenderer.SYNC_REDRAW_REQUESTED
+        ) {
+            return false
+        }
+
+        val image = reader.acquireLatestImage() ?: return false
+        try {
+            val hwBuffer = image.hardwareBuffer ?: return false
+            try {
+                outputBitmap?.recycle()
+                outputBitmap = Bitmap.wrapHardwareBuffer(
+                    hwBuffer, ColorSpace.get(ColorSpace.Named.SRGB)
+                )
+            } finally {
+                hwBuffer.close()
+            }
+        } finally {
+            image.close()
         }
 
         isDirty = false
@@ -157,20 +206,17 @@ class RenderNodeBlurController {
             return
         }
 
-        // Build blur effect
         val blurEffect = RenderEffect.createBlurEffect(
             radius, radius, Shader.TileMode.CLAMP
         )
 
-        // Check for tint
         val hasTint = config.overlayColor != null || config.preBlurTintColor != null
-
         if (!hasTint) {
             captureNode.setRenderEffect(blurEffect)
             return
         }
 
-        // Pre-blur tint (non-Normal blend modes): tint -> blur
+        // Pre-blur tint (non-Normal blend): tint → blur
         val preBlurColor = config.preBlurTintColor
         val preBlurBlendOrdinal = config.preBlurBlendModeOrdinal
         if (preBlurColor != null && preBlurBlendOrdinal != null) {
@@ -178,20 +224,18 @@ class RenderNodeBlurController {
             val tintEffect = RenderEffect.createColorFilterEffect(
                 BlendModeColorFilter(preBlurColor, blendMode)
             )
-            // tint first, then blur: result = blur(tint(source))
             captureNode.setRenderEffect(
                 RenderEffect.createChainEffect(blurEffect, tintEffect)
             )
             return
         }
 
-        // Post-blur tint (Normal blend): blur -> tint
+        // Post-blur tint (Normal blend): blur → tint
         val overlayColor = config.overlayColor
         if (overlayColor != null) {
             val tintEffect = RenderEffect.createColorFilterEffect(
                 BlendModeColorFilter(overlayColor, AndroidBlendMode.SRC_OVER)
             )
-            // blur first, then tint: result = tint(blur(source))
             captureNode.setRenderEffect(
                 RenderEffect.createChainEffect(tintEffect, blurEffect)
             )
@@ -201,30 +245,53 @@ class RenderNodeBlurController {
         captureNode.setRenderEffect(blurEffect)
     }
 
-    /**
-     * Draws the blurred content to the canvas.
-     *
-     * Calls canvas.drawRenderNode(captureNode) which records a reference
-     * to the captured + blurred display list. HWUI applies the RenderEffect
-     * on the RenderThread -- zero CPU pixel access.
-     */
     fun draw(canvas: Canvas) {
         val view = blurView ?: return
-        if (!captureNode.hasDisplayList()) return
+        val bitmap = outputBitmap ?: return
 
-        canvas.save()
-        canvas.clipRect(0f, 0f, view.width.toFloat(), view.height.toFloat())
-        canvas.drawRenderNode(captureNode)
-        canvas.restore()
+        srcRect.set(0, 0, bitmap.width, bitmap.height)
+        dstRect.set(0, 0, view.width, view.height)
+        canvas.drawBitmap(bitmap, srcRect, dstRect, paint)
     }
 
     fun release() {
+        releaseRendererResources()
         captureNode.discardDisplayList()
+        outputBitmap?.recycle()
+        outputBitmap = null
         blurView = null
         sourceView = null
         isInitialized = false
         isDirty = true
+        lastWidth = 0
+        lastHeight = 0
         excludedViews.clear()
+    }
+
+    private fun initRendererResources(width: Int, height: Int): Boolean {
+        return try {
+            val reader = ImageReader.newInstance(
+                width, height, PixelFormat.RGBA_8888, 2,
+                HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE or
+                        HardwareBuffer.USAGE_GPU_COLOR_OUTPUT
+            )
+            imageReader = reader
+
+            hardwareRenderer = HardwareRenderer().apply {
+                setSurface(reader.surface)
+            }
+            true
+        } catch (e: Exception) {
+            releaseRendererResources()
+            false
+        }
+    }
+
+    private fun releaseRendererResources() {
+        hardwareRenderer?.destroy()
+        hardwareRenderer = null
+        imageReader?.close()
+        imageReader = null
     }
 
     fun getAlgorithmName(): String = "RenderNode + RenderEffect"
