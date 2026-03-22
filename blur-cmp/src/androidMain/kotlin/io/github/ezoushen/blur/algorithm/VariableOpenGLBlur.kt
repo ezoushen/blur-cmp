@@ -2,14 +2,20 @@ package io.github.ezoushen.blur.algorithm
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.hardware.HardwareBuffer
 import android.opengl.EGL14
 import android.opengl.EGLConfig
 import android.opengl.EGLContext
 import android.opengl.EGLDisplay
 import android.opengl.EGLSurface
+import android.opengl.GLES11Ext
 import android.opengl.GLES20
+import android.os.Build
+import androidx.annotation.RequiresApi
 import androidx.compose.ui.geometry.Offset
 import androidx.core.graphics.createBitmap
+import androidx.opengl.EGLExt
+import androidx.opengl.EGLImageKHR
 import io.github.ezoushen.blur.BlurGradient
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -49,9 +55,17 @@ class VariableOpenGLBlur : BlurAlgorithm {
     private var surfaceHeight: Int = 0
 
     private var downsampleProgram = 0
+    private var downsampleExternalProgram = 0
     private var upsampleProgram = 0
     private var compositeProgram = 0
     private var blitProgram = 0
+
+    // EGLImage zero-copy input (API 29+)
+    private var inputTexture = 0
+    private var currentEglImage: EGLImageKHR? = null
+
+    // External OES texture for SurfaceTexture input (API 26+)
+    private var externalInputTexture = 0
 
     // Pyramid storage: each level stores the blur result at that iteration
     private var pyramidFramebuffers: IntArray? = null
@@ -198,9 +212,19 @@ class VariableOpenGLBlur : BlurAlgorithm {
             val maxLevel = if (maxRadius <= 0) 0 else
                 ((ln(maxRadius / BASE_SIGMA) / LN_2).toInt() + 1).coerceIn(1, MAX_PYRAMID_LEVELS - 1)
 
-            // Upload input to level 0
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, pyramidTextures!![0])
-            android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, input, 0)
+            // Upload input to level 0: zero-copy if available, else legacy texImage2D
+            val hasEglImageInput = inputTexture != 0 && currentEglImage != null
+            val hasExternalInput = externalInputTexture != 0 && downsampleExternalProgram != 0
+            if (hasEglImageInput) {
+                // Zero-copy: blit from inputTexture (EGLImage) to pyramid level 0
+                blitTexture(inputTexture, pyramidFramebuffers!![0], lastWidth, lastHeight)
+            } else if (hasExternalInput) {
+                // SurfaceTexture: blit from external OES texture to pyramid level 0
+                blitExternalTexture(externalInputTexture, pyramidFramebuffers!![0], lastWidth, lastHeight)
+            } else {
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, pyramidTextures!![0])
+                android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, input, 0)
+            }
 
             // Generate blur pyramid only for levels in the required range
             generateBlurPyramid(minLevel, maxLevel)
@@ -291,6 +315,32 @@ class VariableOpenGLBlur : BlurAlgorithm {
         GLES20.glUniform1i(textureLoc, 0)
 
         drawQuad(blitProgram, flipY)
+    }
+
+    /**
+     * GPU-only blit from a GL_TEXTURE_EXTERNAL_OES texture to a framebuffer.
+     * Uses the external downsample program as a simple passthrough (with zero offset).
+     */
+    private fun blitExternalTexture(srcTexture: Int, dstFramebuffer: Int, width: Int, height: Int) {
+        if (downsampleExternalProgram == 0) return
+
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, dstFramebuffer)
+        GLES20.glViewport(0, 0, width, height)
+
+        GLES20.glUseProgram(downsampleExternalProgram)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, srcTexture)
+
+        val textureLoc = GLES20.glGetUniformLocation(downsampleExternalProgram, "uTexture")
+        GLES20.glUniform1i(textureLoc, 0)
+
+        // Set half pixel to zero for a simple blit (no blur)
+        val halfPixelLoc = GLES20.glGetUniformLocation(downsampleExternalProgram, "uHalfPixel")
+        GLES20.glUniform2f(halfPixelLoc, 0f, 0f)
+
+        drawQuad(downsampleExternalProgram)
+
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
     }
 
     /**
@@ -501,6 +551,76 @@ class VariableOpenGLBlur : BlurAlgorithm {
     }
 
 
+    /**
+     * Imports a HardwareBuffer as a GL texture via EGLImage (zero-copy, API 29+).
+     */
+    @RequiresApi(Build.VERSION_CODES.Q)
+    fun setInputFromHardwareBuffer(hwBuffer: HardwareBuffer): Boolean {
+        val display = eglDisplay ?: return false
+
+        // Adreno workaround: destroy old EGLImage BEFORE texture operations
+        destroyCurrentEglImage()
+
+        try {
+            val image = EGLExt.eglCreateImageFromHardwareBuffer(display, hwBuffer)
+                ?: return false
+
+            if (inputTexture == 0) {
+                val texArray = IntArray(1)
+                GLES20.glGenTextures(1, texArray, 0)
+                inputTexture = texArray[0]
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, inputTexture)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+            } else {
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, inputTexture)
+            }
+
+            EGLExt.glEGLImageTargetTexture2DOES(GLES20.GL_TEXTURE_2D, image)
+            currentEglImage = image
+            return true
+        } catch (e: Exception) {
+            return false
+        }
+    }
+
+    private fun destroyCurrentEglImage() {
+        val image = currentEglImage ?: return
+        val display = eglDisplay ?: return
+        try {
+            EGLExt.eglDestroyImageKHR(display, image)
+        } catch (_: Exception) {}
+        currentEglImage = null
+    }
+
+    fun hasEglImageSupport(): Boolean {
+        if (!isInitialized) return false
+        val extensions = GLES20.glGetString(GLES20.GL_EXTENSIONS) ?: return false
+        return extensions.contains("GL_OES_EGL_image")
+    }
+
+    fun hasExternalOesSupport(): Boolean {
+        if (!isInitialized) return false
+        val extensions = GLES20.glGetString(GLES20.GL_EXTENSIONS) ?: return false
+        return extensions.contains("GL_OES_EGL_image_external")
+    }
+
+    fun getExternalInputTextureId(): Int {
+        if (externalInputTexture != 0) return externalInputTexture
+
+        val texArray = IntArray(1)
+        GLES20.glGenTextures(1, texArray, 0)
+        externalInputTexture = texArray[0]
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalInputTexture)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+        return externalInputTexture
+    }
+
     private fun initEGL(): Boolean {
         eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
         if (eglDisplay == EGL14.EGL_NO_DISPLAY) return false
@@ -591,6 +711,9 @@ class VariableOpenGLBlur : BlurAlgorithm {
 
         blitProgram = createProgram(VERTEX_SHADER, BLIT_FRAGMENT_SHADER)
         if (blitProgram == 0) return false
+
+        // External OES downsample shader — allow failure if extension not supported
+        downsampleExternalProgram = createProgram(VERTEX_SHADER, DOWNSAMPLE_EXTERNAL_FRAGMENT_SHADER)
 
         return true
     }
@@ -772,11 +895,29 @@ class VariableOpenGLBlur : BlurAlgorithm {
     override fun release() {
         if (isInitialized) {
             makeCurrent()
+
+            // Destroy EGLImage before texture deletion (Adreno workaround)
+            destroyCurrentEglImage()
+
             releaseFramebuffers()
+
+            // Delete zero-copy input textures
+            if (inputTexture != 0) {
+                GLES20.glDeleteTextures(1, intArrayOf(inputTexture), 0)
+                inputTexture = 0
+            }
+            if (externalInputTexture != 0) {
+                GLES20.glDeleteTextures(1, intArrayOf(externalInputTexture), 0)
+                externalInputTexture = 0
+            }
 
             if (downsampleProgram != 0) {
                 GLES20.glDeleteProgram(downsampleProgram)
                 downsampleProgram = 0
+            }
+            if (downsampleExternalProgram != 0) {
+                GLES20.glDeleteProgram(downsampleExternalProgram)
+                downsampleExternalProgram = 0
             }
             if (upsampleProgram != 0) {
                 GLES20.glDeleteProgram(upsampleProgram)
@@ -850,6 +991,22 @@ class VariableOpenGLBlur : BlurAlgorithm {
             void main() {
                 gl_Position = vec4(aPosition, 0.0, 1.0);
                 vTexCoord = aTexCoord;
+            }
+        """
+
+        private const val DOWNSAMPLE_EXTERNAL_FRAGMENT_SHADER = """
+            #extension GL_OES_EGL_image_external : require
+            precision mediump float;
+            uniform samplerExternalOES uTexture;
+            uniform vec2 uHalfPixel;
+            varying vec2 vTexCoord;
+            void main() {
+                vec4 sum = texture2D(uTexture, vTexCoord) * 4.0;
+                sum += texture2D(uTexture, vTexCoord - uHalfPixel);
+                sum += texture2D(uTexture, vTexCoord + uHalfPixel);
+                sum += texture2D(uTexture, vTexCoord + vec2(uHalfPixel.x, -uHalfPixel.y));
+                sum += texture2D(uTexture, vTexCoord - vec2(uHalfPixel.x, -uHalfPixel.y));
+                gl_FragColor = sum / 8.0;
             }
         """
 

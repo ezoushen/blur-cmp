@@ -14,6 +14,7 @@ import io.github.ezoushen.blur.algorithm.OpenGLBlur
 import io.github.ezoushen.blur.capture.ContentCapture
 import io.github.ezoushen.blur.capture.DecorViewCapture
 import io.github.ezoushen.blur.capture.HardwareBufferCapture
+import io.github.ezoushen.blur.capture.SurfaceTextureCapture
 import io.github.ezoushen.blur.util.BitmapPool
 
 /**
@@ -59,6 +60,10 @@ class BlurController(
         if (HardwareBufferCapture.isAvailable()) HardwareBufferCapture()
         else DecorViewCapture()
 
+    // SurfaceTexture capture for zero-copy API 26-28 path
+    private var surfaceTextureCapture: SurfaceTextureCapture? = null
+    private var resolvedStrategy: BlurPipelineStrategy? = null
+
     private var captureBitmap: Bitmap? = null
     private var blurredBitmap: Bitmap? = null
 
@@ -95,6 +100,10 @@ class BlurController(
      */
     fun setConfig(config: BlurConfig) {
         if (this.config != config) {
+            // Reset resolved strategy if pipeline strategy changed
+            if (this.config.pipelineStrategy != config.pipelineStrategy) {
+                resolvedStrategy = null
+            }
             this.config = config
             isDirty = true
         }
@@ -136,6 +145,7 @@ class BlurController(
             is HardwareBufferCapture -> capture.addExcludedView(view)
             is DecorViewCapture -> capture.addExcludedView(view)
         }
+        surfaceTextureCapture?.addExcludedView(view)
     }
 
     /**
@@ -146,6 +156,7 @@ class BlurController(
             is HardwareBufferCapture -> capture.removeExcludedView(view)
             is DecorViewCapture -> capture.removeExcludedView(view)
         }
+        surfaceTextureCapture?.removeExcludedView(view)
     }
 
     fun setOutputSurface(surface: android.view.Surface?, width: Int = 0, height: Int = 0) {
@@ -154,6 +165,35 @@ class BlurController(
 
     fun hasOutputSurface(): Boolean =
         (algorithm as? OpenGLBlur)?.hasOutputSurface() == true
+
+    /**
+     * Resolves the pipeline strategy based on config and device capabilities.
+     * Caches the result to avoid repeated GL extension queries.
+     */
+    private fun resolveStrategy(): BlurPipelineStrategy {
+        resolvedStrategy?.let { return it }
+
+        val requested = config.pipelineStrategy
+        val resolved = when (requested) {
+            BlurPipelineStrategy.AUTO -> {
+                val glBlur = algorithm as? OpenGLBlur
+                when {
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
+                        BlurPipelineStrategy.RENDER_EFFECT
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                        glBlur?.hasEglImageSupport() == true ->
+                        BlurPipelineStrategy.EGL_IMAGE
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                        glBlur?.hasExternalOesSupport() == true ->
+                        BlurPipelineStrategy.SURFACE_TEXTURE
+                    else -> BlurPipelineStrategy.LEGACY
+                }
+            }
+            else -> requested
+        }
+        resolvedStrategy = resolved
+        return resolved
+    }
 
     /**
      * Updates the blur if needed.
@@ -192,6 +232,40 @@ class BlurController(
         val scaledWidth = (view.width / effectiveDownsample).toInt().coerceAtLeast(1)
         val scaledHeight = (view.height / effectiveDownsample).toInt().coerceAtLeast(1)
 
+        // Scale radius to maintain consistent blur appearance across different downsample factors
+        val scaledRadius = config.radius * (BASELINE_DOWNSAMPLE / effectiveDownsample)
+
+        // Prepare blur algorithm (needed for GL extension queries in resolveStrategy)
+        if (!algorithm.prepare(context, scaledWidth, scaledHeight, scaledRadius)) {
+            return false
+        }
+
+        val strategy = resolveStrategy()
+
+        // Dispatch to the appropriate capture+blur path
+        val success = when (strategy) {
+            BlurPipelineStrategy.EGL_IMAGE -> updateEglImage(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
+            BlurPipelineStrategy.SURFACE_TEXTURE -> updateSurfaceTexture(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
+            else -> updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
+        }
+
+        if (!success) return false
+
+        lastWidth = view.width
+        lastHeight = view.height
+        isDirty = false
+
+        return true
+    }
+
+    /**
+     * Legacy capture+blur path: bitmap capture -> texImage2D (2 CPU-GPU crossings).
+     */
+    private fun updateLegacy(
+        view: View, source: View,
+        scaledWidth: Int, scaledHeight: Int,
+        scaledRadius: Float, effectiveDownsample: Float
+    ): Boolean {
         // Get or create capture bitmap
         if (captureBitmap == null ||
             captureBitmap?.width != scaledWidth ||
@@ -202,34 +276,102 @@ class BlurController(
         }
 
         val captureOutput = captureBitmap ?: return false
-
-        // Clear the bitmap
         captureOutput.eraseColor(Color.TRANSPARENT)
 
-        // Capture content
         if (!capture.capture(view, source, captureOutput, effectiveDownsample)) {
             return false
         }
 
-        // Apply pre-blur tint (for non-Normal blend modes: tint before blur)
         applyPreBlurTint(captureOutput)
 
-        // Scale radius to maintain consistent blur appearance across different downsample factors
-        // Using 4x as baseline: at 8x downsample, halve the radius; at 2x, double it
-        val scaledRadius = config.radius * (BASELINE_DOWNSAMPLE / effectiveDownsample)
+        blurredBitmap = algorithm.blur(captureOutput, scaledRadius)
+        return true
+    }
 
-        // Prepare blur algorithm
-        if (!algorithm.prepare(context, scaledWidth, scaledHeight, scaledRadius)) {
-            return false
+    /**
+     * EGL_IMAGE path (API 29+): HardwareBuffer -> EGLImage -> GL_TEXTURE_2D. Zero CPU-GPU crossings.
+     */
+    private fun updateEglImage(
+        view: View, source: View,
+        scaledWidth: Int, scaledHeight: Int,
+        scaledRadius: Float, effectiveDownsample: Float
+    ): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
+
+        val hwCapture = capture as? HardwareBufferCapture
+            ?: return updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
+        val glBlur = algorithm as? OpenGLBlur
+            ?: return updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
+
+        val image = hwCapture.captureToHardwareBuffer(view, source, scaledWidth, scaledHeight, effectiveDownsample)
+            ?: return updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
+
+        try {
+            val hwBuffer = image.hardwareBuffer
+                ?: return updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
+
+            try {
+                if (!glBlur.setInputFromHardwareBuffer(hwBuffer)) {
+                    return updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
+                }
+            } finally {
+                hwBuffer.close()
+            }
+        } finally {
+            image.close()
         }
 
-        // Apply blur
-        blurredBitmap = algorithm.blur(captureOutput, scaledRadius)
+        // Blur with zero-copy input (inputTexture is already set)
+        // Pass a dummy bitmap — the blur method will use inputTexture instead of texImage2D
+        val dummyBitmap = captureBitmap ?: run {
+            captureBitmap = bitmapPool.acquire(scaledWidth, scaledHeight)
+            captureBitmap ?: return false
+        }
+        blurredBitmap = algorithm.blur(dummyBitmap, scaledRadius)
+        return true
+    }
 
-        lastWidth = view.width
-        lastHeight = view.height
-        isDirty = false
+    /**
+     * SURFACE_TEXTURE path (API 26+): Surface.lockHardwareCanvas -> SurfaceTexture -> GL_TEXTURE_EXTERNAL_OES.
+     * Zero CPU-GPU crossings.
+     */
+    private fun updateSurfaceTexture(
+        view: View, source: View,
+        scaledWidth: Int, scaledHeight: Int,
+        scaledRadius: Float, effectiveDownsample: Float
+    ): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
 
+        val glBlur = algorithm as? OpenGLBlur
+            ?: return updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
+
+        // Initialize SurfaceTextureCapture if needed
+        var stCapture = surfaceTextureCapture
+        if (stCapture == null) {
+            stCapture = SurfaceTextureCapture()
+            surfaceTextureCapture = stCapture
+        }
+
+        // Get or create the external OES texture
+        val externalTexId = glBlur.getExternalInputTextureId()
+        if (externalTexId == 0) return updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
+
+        // Initialize SurfaceTexture with the GL texture
+        stCapture.init(externalTexId, scaledWidth, scaledHeight)
+
+        // Forward excluded views
+        // Note: excluded views are managed separately per capture instance
+
+        if (!stCapture.capture(view, source, scaledWidth, scaledHeight)) {
+            return updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
+        }
+
+        // Blur with external OES input
+        val dummyBitmap = captureBitmap ?: run {
+            captureBitmap = bitmapPool.acquire(scaledWidth, scaledHeight)
+            captureBitmap ?: return false
+        }
+        blurredBitmap = algorithm.blur(dummyBitmap, scaledRadius)
         return true
     }
 
@@ -293,6 +435,10 @@ class BlurController(
     fun release() {
         algorithm.release()
         capture.release()
+
+        surfaceTextureCapture?.release()
+        surfaceTextureCapture = null
+        resolvedStrategy = null
 
         captureBitmap?.let { bitmapPool.release(it) }
         captureBitmap = null

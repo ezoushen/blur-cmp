@@ -2,12 +2,18 @@ package io.github.ezoushen.blur.algorithm
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.hardware.HardwareBuffer
 import android.opengl.EGL14
 import android.opengl.EGLConfig
 import android.opengl.EGLContext
 import android.opengl.EGLDisplay
 import android.opengl.EGLSurface
+import android.opengl.GLES11Ext
 import android.opengl.GLES20
+import android.os.Build
+import androidx.annotation.RequiresApi
+import androidx.opengl.EGLExt
+import androidx.opengl.EGLImageKHR
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -55,7 +61,15 @@ class OpenGLBlur : BlurAlgorithm {
     private var surfaceHeight: Int = 0
 
     private var downsampleProgram = 0
+    private var downsampleExternalProgram = 0
     private var upsampleProgram = 0
+
+    // EGLImage zero-copy input (API 29+)
+    private var inputTexture = 0
+    private var currentEglImage: EGLImageKHR? = null
+
+    // External OES texture for SurfaceTexture input (API 26+)
+    private var externalInputTexture = 0
 
     private var framebuffers: IntArray? = null
     private var textures: IntArray? = null
@@ -161,15 +175,35 @@ class OpenGLBlur : BlurAlgorithm {
 
             val params = calculateBlurParams(radius)
 
-            // Upload input texture
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texs[0])
-            android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, input, 0)
+            // Determine input source: zero-copy EGLImage, external OES, or legacy texImage2D
+            val hasEglImageInput = inputTexture != 0 && currentEglImage != null
+            val hasExternalInput = externalInputTexture != 0 && downsampleExternalProgram != 0
+            val startTexture: Int
+            val useExternalInput: Boolean
+
+            if (hasEglImageInput) {
+                // Zero-copy path: inputTexture already has the content via EGLImage
+                startTexture = inputTexture
+                useExternalInput = false
+            } else if (hasExternalInput) {
+                // SurfaceTexture path: use external OES texture for first pass
+                startTexture = externalInputTexture
+                useExternalInput = true
+            } else {
+                // Legacy path: upload bitmap via texImage2D (CPU→GPU copy)
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texs[0])
+                android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, input, 0)
+                startTexture = texs[0]
+                useExternalInput = false
+            }
 
             // Single blur pass — offset interpolation within each iteration level
             // provides smooth transitions without the artifacts from cross-level blending
             val useWindowSurface = hasOutputSurface()
             performBlurPasses(fbs, texs, params.iterations, params.offset,
-                renderToWindowSurface = useWindowSurface)
+                renderToWindowSurface = useWindowSurface,
+                startTexture = startTexture,
+                useExternalInput = useExternalInput)
 
             if (useWindowSurface) {
                 try {
@@ -196,29 +230,46 @@ class OpenGLBlur : BlurAlgorithm {
 
     /**
      * Performs the downsample and upsample blur passes.
+     *
+     * @param startTexture Texture to use as initial input (instead of texs[0])
+     * @param useExternalInput If true, use downsampleExternalProgram and GL_TEXTURE_EXTERNAL_OES
+     *                         for the first downsample pass, then switch to regular program
      */
     private fun performBlurPasses(fbs: IntArray, texs: IntArray, iterations: Int, offset: Float,
-                                  renderToWindowSurface: Boolean = false) {
-        var currentTexture = texs[0]
+                                  renderToWindowSurface: Boolean = false,
+                                  startTexture: Int = 0,
+                                  useExternalInput: Boolean = false) {
+        var currentTexture = if (startTexture != 0) startTexture else texs[0]
         var currentWidth = lastWidth
         var currentHeight = lastHeight
 
         // Downsample passes
-        GLES20.glUseProgram(downsampleProgram)
         for (i in 0 until iterations) {
             val targetWidth = (currentWidth / 2).coerceAtLeast(1)
             val targetHeight = (currentHeight / 2).coerceAtLeast(1)
+
+            // First pass with external OES texture uses the external downsample program
+            val isFirstExternalPass = i == 0 && useExternalInput && downsampleExternalProgram != 0
+            val program = if (isFirstExternalPass) downsampleExternalProgram else downsampleProgram
+            val textureTarget = if (isFirstExternalPass) GLES11Ext.GL_TEXTURE_EXTERNAL_OES else GLES20.GL_TEXTURE_2D
+
+            GLES20.glUseProgram(program)
 
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbs[i + 1])
             GLES20.glViewport(0, 0, targetWidth, targetHeight)
 
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, currentTexture)
+            GLES20.glBindTexture(textureTarget, currentTexture)
 
-            val halfPixelLoc = GLES20.glGetUniformLocation(downsampleProgram, "uHalfPixel")
+            val halfPixelLoc = GLES20.glGetUniformLocation(program, "uHalfPixel")
             GLES20.glUniform2f(halfPixelLoc, offset * 0.5f / currentWidth, offset * 0.5f / currentHeight)
 
-            drawQuad(downsampleProgram)
+            drawQuad(program)
+
+            // Unbind external texture after first pass
+            if (isFirstExternalPass) {
+                GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
+            }
 
             currentTexture = texs[i + 1]
             currentWidth = targetWidth
@@ -366,12 +417,107 @@ class OpenGLBlur : BlurAlgorithm {
     fun hasOutputSurface(): Boolean =
         windowSurface != null && windowSurface != EGL14.EGL_NO_SURFACE
 
+    /**
+     * Imports a HardwareBuffer as a GL texture via EGLImage (zero-copy, API 29+).
+     * Returns true if the import succeeded.
+     *
+     * Adreno workaround: destroy the old EGLImage BEFORE any texture operations.
+     */
+    @RequiresApi(Build.VERSION_CODES.Q)
+    fun setInputFromHardwareBuffer(hwBuffer: HardwareBuffer): Boolean {
+        val display = eglDisplay ?: return false
+
+        // Adreno workaround: destroy old EGLImage BEFORE texture operations
+        destroyCurrentEglImage()
+
+        try {
+            val image = EGLExt.eglCreateImageFromHardwareBuffer(display, hwBuffer)
+                ?: return false
+
+            // Allocate inputTexture if needed
+            if (inputTexture == 0) {
+                val texArray = IntArray(1)
+                GLES20.glGenTextures(1, texArray, 0)
+                inputTexture = texArray[0]
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, inputTexture)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+            } else {
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, inputTexture)
+            }
+
+            EGLExt.glEGLImageTargetTexture2DOES(GLES20.GL_TEXTURE_2D, image)
+            currentEglImage = image
+
+            return true
+        } catch (e: Exception) {
+            return false
+        }
+    }
+
+    /**
+     * Destroys the current EGLImage if one exists.
+     */
+    private fun destroyCurrentEglImage() {
+        val image = currentEglImage ?: return
+        val display = eglDisplay ?: return
+        try {
+            EGLExt.eglDestroyImageKHR(display, image)
+        } catch (_: Exception) {
+            // Ignore errors during cleanup
+        }
+        currentEglImage = null
+    }
+
+    /**
+     * Checks if the GL driver supports EGL_OES_EGL_image extension.
+     * Must be called after EGL initialization (on GL thread).
+     */
+    fun hasEglImageSupport(): Boolean {
+        if (!isInitialized) return false
+        val extensions = GLES20.glGetString(GLES20.GL_EXTENSIONS) ?: return false
+        return extensions.contains("GL_OES_EGL_image")
+    }
+
+    /**
+     * Checks if the GL driver supports GL_OES_EGL_image_external extension.
+     * Must be called after EGL initialization (on GL thread).
+     */
+    fun hasExternalOesSupport(): Boolean {
+        if (!isInitialized) return false
+        val extensions = GLES20.glGetString(GLES20.GL_EXTENSIONS) ?: return false
+        return extensions.contains("GL_OES_EGL_image_external")
+    }
+
+    /**
+     * Creates and returns a GL_TEXTURE_EXTERNAL_OES texture for use with SurfaceTexture.
+     * Returns the texture ID, or 0 if external OES is not supported.
+     */
+    fun getExternalInputTextureId(): Int {
+        if (externalInputTexture != 0) return externalInputTexture
+
+        val texArray = IntArray(1)
+        GLES20.glGenTextures(1, texArray, 0)
+        externalInputTexture = texArray[0]
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalInputTexture)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+        return externalInputTexture
+    }
+
     private fun initShaders(): Boolean {
         downsampleProgram = createProgram(VERTEX_SHADER, DOWNSAMPLE_FRAGMENT_SHADER)
         if (downsampleProgram == 0) return false
 
         upsampleProgram = createProgram(VERTEX_SHADER, UPSAMPLE_FRAGMENT_SHADER)
         if (upsampleProgram == 0) return false
+
+        // External OES downsample shader — allow failure if extension not supported
+        downsampleExternalProgram = createProgram(VERTEX_SHADER, DOWNSAMPLE_EXTERNAL_FRAGMENT_SHADER)
 
         return true
     }
@@ -480,11 +626,29 @@ class OpenGLBlur : BlurAlgorithm {
     override fun release() {
         if (isInitialized) {
             makeCurrent()
+
+            // Destroy EGLImage before texture deletion (Adreno workaround)
+            destroyCurrentEglImage()
+
             releaseFramebuffers()
+
+            // Delete zero-copy input textures
+            if (inputTexture != 0) {
+                GLES20.glDeleteTextures(1, intArrayOf(inputTexture), 0)
+                inputTexture = 0
+            }
+            if (externalInputTexture != 0) {
+                GLES20.glDeleteTextures(1, intArrayOf(externalInputTexture), 0)
+                externalInputTexture = 0
+            }
 
             if (downsampleProgram != 0) {
                 GLES20.glDeleteProgram(downsampleProgram)
                 downsampleProgram = 0
+            }
+            if (downsampleExternalProgram != 0) {
+                GLES20.glDeleteProgram(downsampleExternalProgram)
+                downsampleExternalProgram = 0
             }
             if (upsampleProgram != 0) {
                 GLES20.glDeleteProgram(upsampleProgram)
@@ -585,6 +749,26 @@ class OpenGLBlur : BlurAlgorithm {
             void main() {
                 gl_Position = vec4(aPosition, 0.0, 1.0);
                 vTexCoord = aTexCoord;
+            }
+        """
+
+        /**
+         * Downsample fragment shader for GL_TEXTURE_EXTERNAL_OES input (SurfaceTexture).
+         * Uses samplerExternalOES instead of sampler2D. Only used for the first downsample pass.
+         */
+        private const val DOWNSAMPLE_EXTERNAL_FRAGMENT_SHADER = """
+            #extension GL_OES_EGL_image_external : require
+            precision mediump float;
+            uniform samplerExternalOES uTexture;
+            uniform vec2 uHalfPixel;
+            varying vec2 vTexCoord;
+            void main() {
+                vec4 sum = texture2D(uTexture, vTexCoord) * 4.0;
+                sum += texture2D(uTexture, vTexCoord - uHalfPixel);
+                sum += texture2D(uTexture, vTexCoord + uHalfPixel);
+                sum += texture2D(uTexture, vTexCoord + vec2(uHalfPixel.x, -uHalfPixel.y));
+                sum += texture2D(uTexture, vTexCoord - vec2(uHalfPixel.x, -uHalfPixel.y));
+                gl_FragColor = sum / 8.0;
             }
         """
 

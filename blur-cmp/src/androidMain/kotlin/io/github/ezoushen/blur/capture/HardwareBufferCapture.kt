@@ -169,6 +169,97 @@ class HardwareBufferCapture : ContentCapture {
         }
     }
 
+    /**
+     * Captures view content and returns the raw Image with HardwareBuffer inside,
+     * without copying to a mutable bitmap. This enables zero-copy import via EGLImage.
+     *
+     * The caller is responsible for closing the returned Image (and its HardwareBuffer).
+     *
+     * @return The captured Image, or null if capture failed
+     */
+    fun captureToHardwareBuffer(
+        blurView: View,
+        sourceView: View,
+        width: Int,
+        height: Int,
+        downsampleFactor: Float
+    ): android.media.Image? {
+        if (width <= 0 || height <= 0) return null
+
+        try {
+            // Initialize or recreate resources if dimensions changed
+            if (lastWidth != width || lastHeight != height) {
+                releaseResources()
+                if (!initializeResources(width, height)) {
+                    return null
+                }
+                lastWidth = width
+                lastHeight = height
+            }
+
+            val reader = imageReader ?: return null
+            val renderer = hardwareRenderer ?: return null
+            val node = renderNode ?: return null
+
+            // Calculate the region to capture
+            val blurViewLocation = IntArray(2)
+            val sourceLocation = IntArray(2)
+            blurView.getLocationOnScreen(blurViewLocation)
+            sourceView.getLocationOnScreen(sourceLocation)
+
+            val offsetX = blurViewLocation[0] - sourceLocation[0]
+            val offsetY = blurViewLocation[1] - sourceLocation[1]
+
+            // Hide blurView + excluded views during capture
+            val hiddenViews = mutableListOf<View>()
+            try {
+                isCapturing = true
+
+                if (blurView.visibility == View.VISIBLE) {
+                    blurView.visibility = View.INVISIBLE
+                    hiddenViews.add(blurView)
+                }
+                for (excluded in excludedViews) {
+                    if (excluded.visibility == View.VISIBLE) {
+                        excluded.visibility = View.INVISIBLE
+                        hiddenViews.add(excluded)
+                    }
+                }
+
+                val canvas = node.beginRecording(width, height)
+                try {
+                    val scaleX = width.toFloat() / blurView.width
+                    val scaleY = height.toFloat() / blurView.height
+                    canvas.scale(scaleX, scaleY)
+                    canvas.translate(-offsetX.toFloat(), -offsetY.toFloat())
+                    sourceView.draw(canvas)
+                } finally {
+                    node.endRecording()
+                }
+            } finally {
+                for (hidden in hiddenViews) {
+                    hidden.visibility = View.VISIBLE
+                }
+                isCapturing = false
+            }
+
+            // Rasterize on GPU
+            renderer.setContentRoot(node)
+            val syncResult = renderer.createRenderRequest()
+                .setWaitForPresent(true)
+                .syncAndDraw()
+
+            if (syncResult != HardwareRenderer.SYNC_OK &&
+                syncResult != HardwareRenderer.SYNC_REDRAW_REQUESTED) {
+                return null
+            }
+
+            return reader.acquireLatestImage()
+        } catch (e: Exception) {
+            return null
+        }
+    }
+
     private fun initializeResources(width: Int, height: Int): Boolean {
         return try {
             imageReader = ImageReader.newInstance(
