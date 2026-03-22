@@ -255,28 +255,56 @@ Uses pure Compose `graphicsLayer { renderEffect = ... }` — no View pipeline at
 #### Measured Performance (Pixel 8 Pro API 35 emulator)
 
 ```
-┌─────────────────────────┬────────────┬─────────────┬─────────┐
-│ Metric                  │ Old Kawase │ RenderNode  │ Change  │
-├─────────────────────────┼────────────┼─────────────┼─────────┤
-│ Draw→Complete avg       │ 23.88 ms   │ 12.85 ms    │ -46%    │
-│ Draw→Complete min       │ 17.06 ms   │  6.75 ms    │ -60%    │
-│ Janky frames            │ 33.21%     │  2.54%      │ -13x    │
-│ Slow UI thread frames   │ 93/280     │ 16/629      │ -12x    │
-│ 50th percentile         │ 48 ms      │ 25 ms       │ -48%    │
-│ 90th percentile         │ 48 ms      │ 32 ms       │ -33%    │
-└─────────────────────────┴────────────┴─────────────┴─────────┘
+┌─────────────────────────┬────────────┬─────────────┬──────────────┬─────────┐
+│ Metric                  │ Old Kawase │ RenderNode  │ +TextureView │ Total   │
+│                         │ (baseline) │ (capture)   │ (output)     │ Change  │
+├─────────────────────────┼────────────┼─────────────┼──────────────┼─────────┤
+│ Draw→Complete avg       │ 23.88 ms   │ 12.85 ms    │  6.23 ms     │ -74%    │
+│ Draw→Complete min       │ 17.06 ms   │  6.75 ms    │  4.37 ms     │ -74%    │
+│ Janky frames            │ 33.21%     │  2.54%      │  0.52%       │ -64x    │
+│ Slow UI thread frames   │ 93/280     │ 16/629      │  2/764       │ -46x    │
+│ 50th percentile         │ 48 ms      │ 25 ms       │ 22 ms        │ -54%    │
+│ 90th percentile         │ 48 ms      │ 32 ms       │ 27 ms        │ -44%    │
+└─────────────────────────┴────────────┴─────────────┴──────────────┴─────────┘
 ```
 
 #### What was eliminated
-- Software `DecorView.draw(softwareCanvas)` — the 2-5ms bottleneck
-- OpenGL EGL context + Dual Kawase shader pipeline
-- `glReadPixels` readback
-- HWUI texture re-upload from software bitmap
+- Software `DecorView.draw(softwareCanvas)` — the 2-5ms capture bottleneck
+- `glReadPixels` readback — eliminated via TextureView Surface output
+- `canvas.drawBitmap` HWUI re-upload — TextureView composites as GPU texture
+- OpenGL EGL context + Dual Kawase shader pipeline (API 31+ only)
 - `isLive` fade-direction gating (dirty flag issue gone with RecordingCanvas)
+
+**TextureView output (all API levels):** Final Kawase blur pass renders directly
+to TextureView's Surface via `eglSwapBuffers`. HWUI composites the TextureView
+as a GPU texture. Eliminates 2 CPU-GPU crossings from the output side.
+
+**RecordingCanvas capture (API 29+):** `decorView.draw(RecordingCanvas)` records
+display list pointers instead of software-rendering pixels. Eliminates the
+2-5ms capture bottleneck.
 
 ### Still using Kawase
 - Variable/gradient blur — no RenderEffect equivalent for per-pixel radius
 - API < 31 — RenderNode/RenderEffect not available
+
+### CPU↔GPU Crossing Summary
+
+```
+┌──────────┬──────────────────────────────────────────┬────────┬────────┐
+│ API      │ Pipeline                                 │ Before │ After  │
+├──────────┼──────────────────────────────────────────┼────────┼────────┤
+│ 31+      │ RecordingCanvas → RenderEffect           │   4    │   0    │
+│ uniform  │   → HardwareRenderer → HW Bitmap         │        │        │
+├──────────┼──────────────────────────────────────────┼────────┼────────┤
+│ 29+      │ RecordingCanvas → HardwareRenderer        │   4    │   1    │
+│ Kawase   │   → HW Bitmap → mutable Bitmap  ①CPU    │        │        │
+│          │   → texImage2D → Kawase                  │        │        │
+│          │   → last pass to TextureView Surface     │        │        │
+├──────────┼──────────────────────────────────────────┼────────┼────────┤
+│ < 29     │ software capture  ①CPU → texImage2D ②GPU │   4    │   2    │
+│ Kawase   │   → Kawase → TextureView Surface         │        │        │
+└──────────┴──────────────────────────────────────────┴────────┴────────┘
+```
 
 ### Deferred
 - **HardwareBuffer FBO Output (API 29+)** — NDK-only EGL functions, GPU driver bugs, premature
