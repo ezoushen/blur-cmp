@@ -93,6 +93,16 @@ class VariableOpenGLBlur : BlurAlgorithm {
             }
     }
 
+    private val texCoordFlippedBuffer: FloatBuffer by lazy {
+        ByteBuffer.allocateDirect(QUAD_TEX_COORDS_FLIPPED.size * 4)
+            .order(ByteOrder.nativeOrder())
+            .asFloatBuffer()
+            .apply {
+                put(QUAD_TEX_COORDS_FLIPPED)
+                position(0)
+            }
+    }
+
     /**
      * Sets the blur gradient for variable blur effect.
      */
@@ -209,7 +219,7 @@ class VariableOpenGLBlur : BlurAlgorithm {
                     val vw = if (surfaceWidth > 0) surfaceWidth else lastWidth
                     val vh = if (surfaceHeight > 0) surfaceHeight else lastHeight
                     GLES20.glViewport(0, 0, vw, vh)
-                    blitTexture(outputTexture, 0, vw, vh)
+                    blitTexture(outputTexture, 0, vw, vh, flipY = true)
                     EGL14.eglSwapBuffers(eglDisplay, windowSurface)
                 } finally {
                     EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
@@ -269,7 +279,7 @@ class VariableOpenGLBlur : BlurAlgorithm {
      * GPU-only texture copy using render-to-texture (blit shader).
      * Much faster than glReadPixels + glTexSubImage2D.
      */
-    private fun blitTexture(srcTexture: Int, dstFramebuffer: Int, width: Int, height: Int) {
+    private fun blitTexture(srcTexture: Int, dstFramebuffer: Int, width: Int, height: Int, flipY: Boolean = false) {
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, dstFramebuffer)
         GLES20.glViewport(0, 0, width, height)
 
@@ -280,7 +290,7 @@ class VariableOpenGLBlur : BlurAlgorithm {
         val textureLoc = GLES20.glGetUniformLocation(blitProgram, "uTexture")
         GLES20.glUniform1i(textureLoc, 0)
 
-        drawQuad(blitProgram)
+        drawQuad(blitProgram, flipY)
     }
 
     /**
@@ -718,7 +728,7 @@ class VariableOpenGLBlur : BlurAlgorithm {
         return true
     }
 
-    private fun drawQuad(program: Int) {
+    private fun drawQuad(program: Int, flipY: Boolean = false) {
         val positionLoc = GLES20.glGetAttribLocation(program, "aPosition")
         val texCoordLoc = GLES20.glGetAttribLocation(program, "aTexCoord")
         val textureLoc = GLES20.glGetUniformLocation(program, "uTexture")
@@ -728,8 +738,9 @@ class VariableOpenGLBlur : BlurAlgorithm {
         GLES20.glEnableVertexAttribArray(positionLoc)
         GLES20.glVertexAttribPointer(positionLoc, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
 
+        val texBuf = if (flipY) texCoordFlippedBuffer else texCoordBuffer
         GLES20.glEnableVertexAttribArray(texCoordLoc)
-        GLES20.glVertexAttribPointer(texCoordLoc, 2, GLES20.GL_FLOAT, false, 0, texCoordBuffer)
+        GLES20.glVertexAttribPointer(texCoordLoc, 2, GLES20.GL_FLOAT, false, 0, texBuf)
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
@@ -826,6 +837,10 @@ class VariableOpenGLBlur : BlurAlgorithm {
 
         private val QUAD_TEX_COORDS = floatArrayOf(
             0f, 0f, 1f, 0f, 0f, 1f, 1f, 1f
+        )
+
+        private val QUAD_TEX_COORDS_FLIPPED = floatArrayOf(
+            0f, 1f, 1f, 1f, 0f, 0f, 1f, 0f
         )
 
         private const val VERTEX_SHADER = """

@@ -85,6 +85,18 @@ class OpenGLBlur : BlurAlgorithm {
             }
     }
 
+    // Y-flipped texture coordinates for rendering to window surfaces (TextureView).
+    // OpenGL FBOs use bottom-left origin; Android screen uses top-left origin.
+    private val texCoordFlippedBuffer: FloatBuffer by lazy {
+        ByteBuffer.allocateDirect(QUAD_TEX_COORDS_FLIPPED.size * 4)
+            .order(ByteOrder.nativeOrder())
+            .asFloatBuffer()
+            .apply {
+                put(QUAD_TEX_COORDS_FLIPPED)
+                position(0)
+            }
+    }
+
     override fun prepare(context: Context, width: Int, height: Int, radius: Float): Boolean {
         if (width <= 0 || height <= 0) return false
 
@@ -239,7 +251,8 @@ class OpenGLBlur : BlurAlgorithm {
             val halfPixelLoc = GLES20.glGetUniformLocation(upsampleProgram, "uHalfPixel")
             GLES20.glUniform2f(halfPixelLoc, offset * 0.5f / currentWidth, offset * 0.5f / currentHeight)
 
-            drawQuad(upsampleProgram)
+            // Flip Y when rendering to window surface (OpenGL → Android Y-axis)
+            drawQuad(upsampleProgram, flipY = i == 0 && renderToWindowSurface)
 
             currentTexture = texs[if (i == 0) 0 else i]
             currentWidth = targetWidth
@@ -436,7 +449,7 @@ class OpenGLBlur : BlurAlgorithm {
         return true
     }
 
-    private fun drawQuad(program: Int) {
+    private fun drawQuad(program: Int, flipY: Boolean = false) {
         val positionLoc = GLES20.glGetAttribLocation(program, "aPosition")
         val texCoordLoc = GLES20.glGetAttribLocation(program, "aTexCoord")
         val textureLoc = GLES20.glGetUniformLocation(program, "uTexture")
@@ -446,8 +459,9 @@ class OpenGLBlur : BlurAlgorithm {
         GLES20.glEnableVertexAttribArray(positionLoc)
         GLES20.glVertexAttribPointer(positionLoc, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
 
+        val texBuf = if (flipY) texCoordFlippedBuffer else texCoordBuffer
         GLES20.glEnableVertexAttribArray(texCoordLoc)
-        GLES20.glVertexAttribPointer(texCoordLoc, 2, GLES20.GL_FLOAT, false, 0, texCoordBuffer)
+        GLES20.glVertexAttribPointer(texCoordLoc, 2, GLES20.GL_FLOAT, false, 0, texBuf)
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
@@ -554,6 +568,14 @@ class OpenGLBlur : BlurAlgorithm {
             1f, 0f,
             0f, 1f,
             1f, 1f
+        )
+
+        // Y-flipped for window surface rendering (OpenGL → Android screen Y-axis)
+        private val QUAD_TEX_COORDS_FLIPPED = floatArrayOf(
+            0f, 1f,
+            1f, 1f,
+            0f, 0f,
+            1f, 0f
         )
 
         private const val VERTEX_SHADER = """
