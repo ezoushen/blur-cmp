@@ -1,5 +1,6 @@
 package io.github.ezoushen.blur.cmp
 
+import android.graphics.BlendModeColorFilter
 import android.graphics.RenderEffect
 import android.graphics.Shader
 import android.os.Build
@@ -17,7 +18,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.ComposeView
@@ -56,12 +56,12 @@ actual fun BlurOverlayHost(
         background()
 
         if (state.isEnabled && config.radius > 0f) {
-            // Tier 1: API 31+ uniform blur with Normal blend mode tint.
+            // Tier 1: API 31+ uniform blur (any blend mode).
             // Bypasses entire View-based pipeline — pure Compose graphicsLayer.
-            val hasNonNormalTint = config.tintColorValue != 0L &&
-                config.tintBlendMode != BlurBlendMode.Normal
+            // Tint with non-Normal blend modes uses RenderEffect.createChainEffect
+            // to preserve the pipeline order: tint → blur (same as Kawase path).
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-                config.gradient == null && !hasNonNormalTint
+                config.gradient == null
             ) {
                 RenderEffectBlurOverlay(state, background)
                 content()
@@ -134,8 +134,16 @@ actual fun BlurOverlayHost(
  * API 31+ blur overlay using RenderEffect on graphicsLayer.
  *
  * Eliminates all CPU-GPU roundtrips: no software capture, no OpenGL, no readback.
- * The background composable is rendered inside a graphicsLayer with RenderEffect blur.
- * Tint overlay is a separate sibling (outside the blur) so it stays crisp.
+ * The background composable is rendered inside a graphicsLayer with a chained
+ * RenderEffect that preserves the Kawase pipeline order:
+ *
+ *   capture (graphicsLayer content) → tint (ColorFilter) → blur (BlurEffect) → render
+ *
+ * - Normal blend tint: applied AFTER blur via createChainEffect(tint, blur)
+ * - Non-Normal blend tint (e.g. ColorDodge): applied BEFORE blur via
+ *   createChainEffect(blur, tint) so the blend mode interacts with the
+ *   actual background pixels before they are blurred.
+ * - No tint: blur only.
  *
  * background() is invoked here AND as an unblurred sibling at the Box root.
  * When alpha=1, only the blurred version is visible. When alpha=0, the blurred
@@ -147,20 +155,16 @@ private fun RenderEffectBlurOverlay(
     state: BlurOverlayState,
     background: @Composable () -> Unit,
 ) {
-    val config = state.config
-    // Blurred background layer.
-    // Lambda graphicsLayer: updates properties without recomposition.
-    // Pattern matches blurBehind() in BlurModifier.kt.
     Box(
         modifier = Modifier
             .fillMaxSize()
             .graphicsLayer {
+                val cfg = state.config
                 // Guard: RenderEffect.createBlurEffect(0,0) crashes on API 31+
                 // (Google Issue Tracker #241546169 — unfixed upstream).
-                val r = state.config.radius
+                val r = cfg.radius
                 renderEffect = if (r > 0f) {
-                    RenderEffect.createBlurEffect(r, r, Shader.TileMode.CLAMP)
-                        .asComposeRenderEffect()
+                    buildBlurRenderEffect(r, cfg)?.asComposeRenderEffect()
                 } else {
                     null
                 }
@@ -169,17 +173,40 @@ private fun RenderEffectBlurOverlay(
     ) {
         background()
     }
+}
 
-    // Tint overlay — SEPARATE from the blurred graphicsLayer so tint stays crisp.
-    // Matches blurBehind() in BlurModifier.kt pattern (tint drawn AFTER blur, on top).
-    val tintColor = config.tintColor
-    if (tintColor != null) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer { alpha = state.alpha }
-                .drawBehind { drawRect(tintColor) }
-        )
+/**
+ * Builds a chained RenderEffect that preserves the Kawase pipeline order:
+ * capture → tint (with blend mode) → blur → render.
+ *
+ * - No tint: blur only
+ * - Normal blend tint: blur first, then tint on top (post-blur overlay)
+ * - Non-Normal blend tint: tint first (interacts with raw pixels), then blur
+ */
+@RequiresApi(Build.VERSION_CODES.S)
+private fun buildBlurRenderEffect(radius: Float, config: BlurOverlayConfig): RenderEffect? {
+    val blurEffect = RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP)
+
+    val hasTint = config.tintColorValue != 0L
+    if (!hasTint) return blurEffect
+
+    val tintArgb = config.tintColorValue.toInt()
+    val blendMode = AndroidBlendModeMapper.toAndroidBlendMode(config.tintBlendMode)
+        ?: return blurEffect // fallback: no tint if blend mode unavailable
+
+    val tintEffect = RenderEffect.createColorFilterEffect(
+        BlendModeColorFilter(tintArgb, blendMode)
+    )
+
+    return if (config.tintBlendMode == BlurBlendMode.Normal) {
+        // Normal: blur first → tint on top (post-blur overlay)
+        // result = tint(blur(source))
+        RenderEffect.createChainEffect(tintEffect, blurEffect)
+    } else {
+        // Non-Normal (e.g. ColorDodge): tint first → then blur
+        // result = blur(tint(source))
+        // This matches Kawase pipeline: capture → tint → blur → render
+        RenderEffect.createChainEffect(blurEffect, tintEffect)
     }
 }
 
