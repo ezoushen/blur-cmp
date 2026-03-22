@@ -11,6 +11,7 @@ import android.view.View
 import io.github.ezoushen.blur.algorithm.VariableOpenGLBlur
 import io.github.ezoushen.blur.capture.ContentCapture
 import io.github.ezoushen.blur.capture.DecorViewCapture
+import io.github.ezoushen.blur.capture.HardwareBufferCapture
 import io.github.ezoushen.blur.util.BitmapPool
 
 /**
@@ -54,7 +55,10 @@ class VariableBlurController(
 
     private val bitmapPool = BitmapPool(maxPoolSize = 4)
     private val algorithm = VariableOpenGLBlur()
-    private val capture: ContentCapture = DecorViewCapture()
+    // API 29+: RenderNode capture (RecordingCanvas) instead of software canvas
+    private val capture: ContentCapture =
+        if (HardwareBufferCapture.isAvailable()) HardwareBufferCapture()
+        else DecorViewCapture()
 
     private var gradient: BlurGradient? = null
 
@@ -141,15 +145,25 @@ class VariableBlurController(
      * Use this in the blur view's draw() method to prevent infinite recursion.
      */
     fun isCapturing(): Boolean {
-        return (capture as? DecorViewCapture)?.isCurrentlyCapturing() == true
+        return when (capture) {
+            is HardwareBufferCapture -> capture.isCurrentlyCapturing()
+            is DecorViewCapture -> capture.isCurrentlyCapturing()
+            else -> false
+        }
     }
 
     fun addExcludedView(view: View) {
-        (capture as? DecorViewCapture)?.addExcludedView(view)
+        when (capture) {
+            is HardwareBufferCapture -> capture.addExcludedView(view)
+            is DecorViewCapture -> capture.addExcludedView(view)
+        }
     }
 
     fun removeExcludedView(view: View) {
-        (capture as? DecorViewCapture)?.removeExcludedView(view)
+        when (capture) {
+            is HardwareBufferCapture -> capture.removeExcludedView(view)
+            is DecorViewCapture -> capture.removeExcludedView(view)
+        }
     }
 
     /**

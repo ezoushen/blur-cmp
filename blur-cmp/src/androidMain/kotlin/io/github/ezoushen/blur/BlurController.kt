@@ -12,6 +12,7 @@ import io.github.ezoushen.blur.algorithm.BlurAlgorithm
 import io.github.ezoushen.blur.algorithm.BlurAlgorithmFactory
 import io.github.ezoushen.blur.capture.ContentCapture
 import io.github.ezoushen.blur.capture.DecorViewCapture
+import io.github.ezoushen.blur.capture.HardwareBufferCapture
 import io.github.ezoushen.blur.util.BitmapPool
 
 /**
@@ -52,7 +53,10 @@ class BlurController(
 
     private val bitmapPool = BitmapPool(maxPoolSize = 4)
     private val algorithm: BlurAlgorithm = BlurAlgorithmFactory.create(context)
-    private val capture: ContentCapture = DecorViewCapture()
+    // API 29+: RenderNode capture (RecordingCanvas, ~0ms) instead of software canvas (2-5ms)
+    private val capture: ContentCapture =
+        if (HardwareBufferCapture.isAvailable()) HardwareBufferCapture()
+        else DecorViewCapture()
 
     private var captureBitmap: Bitmap? = null
     private var blurredBitmap: Bitmap? = null
@@ -115,7 +119,11 @@ class BlurController(
      * Use this in the blur view's draw() method to prevent infinite recursion.
      */
     fun isCapturing(): Boolean {
-        return (capture as? DecorViewCapture)?.isCurrentlyCapturing() == true
+        return when (capture) {
+            is HardwareBufferCapture -> capture.isCurrentlyCapturing()
+            is DecorViewCapture -> capture.isCurrentlyCapturing()
+            else -> false
+        }
     }
 
     /**
@@ -123,14 +131,20 @@ class BlurController(
      * to prevent its content from appearing in the blurred bitmap.
      */
     fun addExcludedView(view: View) {
-        (capture as? DecorViewCapture)?.addExcludedView(view)
+        when (capture) {
+            is HardwareBufferCapture -> capture.addExcludedView(view)
+            is DecorViewCapture -> capture.addExcludedView(view)
+        }
     }
 
     /**
      * Unregister a previously excluded view.
      */
     fun removeExcludedView(view: View) {
-        (capture as? DecorViewCapture)?.removeExcludedView(view)
+        when (capture) {
+            is HardwareBufferCapture -> capture.removeExcludedView(view)
+            is DecorViewCapture -> capture.removeExcludedView(view)
+        }
     }
 
     /**

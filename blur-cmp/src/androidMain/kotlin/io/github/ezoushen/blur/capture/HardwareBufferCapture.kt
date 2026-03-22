@@ -12,21 +12,25 @@ import android.view.View
 import androidx.annotation.RequiresApi
 
 /**
- * High-performance capture implementation using HardwareBuffer for API 31+.
+ * GPU-accelerated capture using RenderNode + HardwareRenderer for API 29+.
  *
- * This implementation provides zero-copy GPU-accelerated capture by:
- * 1. Rendering view content to a RenderNode
- * 2. Using HardwareRenderer to render to an ImageReader surface
- * 3. Extracting the HardwareBuffer directly without CPU copies
+ * Replaces software canvas capture with hardware-accelerated recording:
+ * 1. sourceView.draw(RecordingCanvas) — records display list refs (~0ms vs 2-5ms)
+ * 2. HardwareRenderer rasterizes to ImageReader surface at downsampled size
+ * 3. HardwareBuffer → Hardware Bitmap → copy to mutable output bitmap
  *
- * **Performance Benefits:**
- * - Zero-copy between GPU and CPU
- * - Direct hardware buffer access
- * - Optimal for RenderEffect blur pipeline
+ * The output is a mutable Bitmap compatible with the existing Kawase blur
+ * pipeline (texImage2D → blur → glReadPixels). The optimization is in the
+ * capture step: RecordingCanvas records pointers to existing display lists
+ * instead of software-rendering every pixel.
  *
- * **Requirements:** API 31+ (Android 12)
+ * On API 31+, [RenderNodeBlurController] bypasses this entirely by using
+ * RenderEffect for the blur step too. This class is the API 29-30 path.
+ *
+ * **Requirements:** API 29+ (Android 10) — RenderNode, HardwareRenderer,
+ * ImageReader with HardwareBuffer usage, Bitmap.wrapHardwareBuffer()
  */
-@RequiresApi(Build.VERSION_CODES.S)
+@RequiresApi(Build.VERSION_CODES.Q)
 class HardwareBufferCapture : ContentCapture {
 
     private var imageReader: ImageReader? = null
@@ -35,6 +39,21 @@ class HardwareBufferCapture : ContentCapture {
 
     private var lastWidth = 0
     private var lastHeight = 0
+
+    @Volatile
+    private var isCapturing = false
+
+    private val excludedViews = mutableListOf<View>()
+
+    fun isCurrentlyCapturing(): Boolean = isCapturing
+
+    fun addExcludedView(view: View) {
+        if (view !in excludedViews) excludedViews.add(view)
+    }
+
+    fun removeExcludedView(view: View) {
+        excludedViews.remove(view)
+    }
 
     override fun capture(
         blurView: View,
@@ -71,24 +90,43 @@ class HardwareBufferCapture : ContentCapture {
             val offsetX = blurViewLocation[0] - sourceLocation[0]
             val offsetY = blurViewLocation[1] - sourceLocation[1]
 
-            // Record drawing commands to RenderNode
-            val canvas = node.beginRecording(width, height)
+            // Hide blurView + excluded views during capture
+            val hiddenViews = mutableListOf<View>()
             try {
-                // Scale for downsampling
-                val scaleX = width.toFloat() / blurView.width
-                val scaleY = height.toFloat() / blurView.height
-                canvas.scale(scaleX, scaleY)
+                isCapturing = true
 
-                // Translate to capture the correct region
-                canvas.translate(-offsetX.toFloat(), -offsetY.toFloat())
+                if (blurView.visibility == View.VISIBLE) {
+                    blurView.visibility = View.INVISIBLE
+                    hiddenViews.add(blurView)
+                }
+                for (excluded in excludedViews) {
+                    if (excluded.visibility == View.VISIBLE) {
+                        excluded.visibility = View.INVISIBLE
+                        hiddenViews.add(excluded)
+                    }
+                }
 
-                // Draw the source view
-                sourceView.draw(canvas)
+                // Record drawing commands to RenderNode via RecordingCanvas.
+                // This records display list references (pointers to existing
+                // RenderNodes), NOT software pixels. Near-zero CPU cost.
+                val canvas = node.beginRecording(width, height)
+                try {
+                    val scaleX = width.toFloat() / blurView.width
+                    val scaleY = height.toFloat() / blurView.height
+                    canvas.scale(scaleX, scaleY)
+                    canvas.translate(-offsetX.toFloat(), -offsetY.toFloat())
+                    sourceView.draw(canvas)
+                } finally {
+                    node.endRecording()
+                }
             } finally {
-                node.endRecording()
+                for (hidden in hiddenViews) {
+                    hidden.visibility = View.VISIBLE
+                }
+                isCapturing = false
             }
 
-            // Render to the ImageReader surface
+            // Rasterize on GPU via HardwareRenderer → ImageReader
             renderer.setContentRoot(node)
             val syncResult = renderer.createRenderRequest()
                 .setWaitForPresent(true)
@@ -99,24 +137,18 @@ class HardwareBufferCapture : ContentCapture {
                 return false
             }
 
-            // Acquire the rendered image
+            // Extract HardwareBuffer → Hardware Bitmap → copy to mutable output
             val image = reader.acquireLatestImage() ?: return false
-
             try {
                 val hardwareBuffer = image.hardwareBuffer ?: return false
-
                 try {
-                    // Create a hardware bitmap from the buffer
                     val hardwareBitmap = Bitmap.wrapHardwareBuffer(
                         hardwareBuffer,
                         android.graphics.ColorSpace.get(android.graphics.ColorSpace.Named.SRGB)
                     ) ?: return false
 
-                    // Copy to the output bitmap (which may be mutable)
                     val outputCanvas = Canvas(output)
                     outputCanvas.drawBitmap(hardwareBitmap, 0f, 0f, null)
-
-                    // Don't recycle hardware bitmap - it shares the buffer
                     return true
                 } finally {
                     hardwareBuffer.close()
@@ -131,29 +163,19 @@ class HardwareBufferCapture : ContentCapture {
 
     private fun initializeResources(width: Int, height: Int): Boolean {
         return try {
-            // Create ImageReader with HardwareBuffer usage flags
             imageReader = ImageReader.newInstance(
-                width,
-                height,
-                PixelFormat.RGBA_8888,
-                2, // Max images
+                width, height, PixelFormat.RGBA_8888, 2,
                 HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE or
                         HardwareBuffer.USAGE_GPU_COLOR_OUTPUT
             )
-
             val reader = imageReader ?: return false
-
-            // Create RenderNode
             renderNode = RenderNode("BlurCapture").apply {
                 setPosition(0, 0, width, height)
             }
-
-            // Create HardwareRenderer
             hardwareRenderer = HardwareRenderer().apply {
                 setSurface(reader.surface)
                 setContentRoot(renderNode)
             }
-
             true
         } catch (e: Exception) {
             releaseResources()
@@ -164,10 +186,8 @@ class HardwareBufferCapture : ContentCapture {
     private fun releaseResources() {
         hardwareRenderer?.destroy()
         hardwareRenderer = null
-
         renderNode?.discardDisplayList()
         renderNode = null
-
         imageReader?.close()
         imageReader = null
     }
@@ -176,16 +196,13 @@ class HardwareBufferCapture : ContentCapture {
         releaseResources()
         lastWidth = 0
         lastHeight = 0
+        excludedViews.clear()
     }
 
     override fun isAvailable(): Boolean = Companion.isAvailable()
 
     companion object {
-        /**
-         * Checks if HardwareBuffer capture is available on this device.
-         */
-        fun isAvailable(): Boolean {
-            return Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-        }
+        fun isAvailable(): Boolean =
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
     }
 }
