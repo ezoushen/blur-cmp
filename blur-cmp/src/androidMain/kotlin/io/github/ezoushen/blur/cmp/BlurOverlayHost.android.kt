@@ -16,6 +16,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
+import android.graphics.RenderEffect
+import android.graphics.Shader
+import android.os.Build
+import androidx.annotation.RequiresApi
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.asComposeRenderEffect
+import androidx.compose.ui.graphics.graphicsLayer
 import io.github.ezoushen.blur.view.BlurView
 import io.github.ezoushen.blur.view.VariableBlurView
 
@@ -49,6 +56,18 @@ actual fun BlurOverlayHost(
         background()
 
         if (state.isEnabled && config.radius > 0f) {
+            // Tier 1: API 31+ uniform blur with Normal blend mode tint.
+            // Bypasses entire View-based pipeline — pure Compose graphicsLayer.
+            val hasNonNormalTint = config.tintColorValue != 0L &&
+                config.tintBlendMode != BlurBlendMode.Normal
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                config.gradient == null && !hasNonNormalTint
+            ) {
+                RenderEffectBlurOverlay(state, config, background)
+                content()
+                return@Box
+            }
+
             val gradient = config.gradient
             var prevAlpha by remember { mutableFloatStateOf(state.alpha) }
 
@@ -108,6 +127,59 @@ actual fun BlurOverlayHost(
         } else {
             content()
         }
+    }
+}
+
+/**
+ * API 31+ blur overlay using RenderEffect on graphicsLayer.
+ *
+ * Eliminates all CPU-GPU roundtrips: no software capture, no OpenGL, no readback.
+ * The background composable is rendered inside a graphicsLayer with RenderEffect blur.
+ * Tint overlay is a separate sibling (outside the blur) so it stays crisp.
+ *
+ * background() is invoked here AND as an unblurred sibling at the Box root.
+ * When alpha=1, only the blurred version is visible. When alpha=0, the blurred
+ * layer is invisible and the sharp background shows through.
+ */
+@RequiresApi(Build.VERSION_CODES.S)
+@Composable
+private fun RenderEffectBlurOverlay(
+    state: BlurOverlayState,
+    config: BlurOverlayConfig,
+    background: @Composable () -> Unit,
+) {
+    // Blurred background layer.
+    // Lambda graphicsLayer: updates properties without recomposition.
+    // Pattern matches BlurModifier.kt:41-48.
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .graphicsLayer {
+                // Guard: RenderEffect.createBlurEffect(0,0) crashes on API 31+
+                // (Google Issue Tracker #241546169 — unfixed upstream).
+                val r = config.radius
+                renderEffect = if (r > 0f) {
+                    RenderEffect.createBlurEffect(r, r, Shader.TileMode.CLAMP)
+                        .asComposeRenderEffect()
+                } else {
+                    null
+                }
+                alpha = state.alpha
+            }
+    ) {
+        background()
+    }
+
+    // Tint overlay — SEPARATE from the blurred graphicsLayer so tint stays crisp.
+    // Matches BlurModifier.kt:50-55 pattern (tint drawn AFTER blur, on top).
+    val tintColor = config.tintColor
+    if (tintColor != null && state.alpha > 0f) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer { alpha = state.alpha }
+                .drawBehind { drawRect(tintColor) }
+        )
     }
 }
 
