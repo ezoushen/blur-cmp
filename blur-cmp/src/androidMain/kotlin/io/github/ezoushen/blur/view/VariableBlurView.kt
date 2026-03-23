@@ -5,8 +5,11 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.SurfaceTexture
 import android.util.AttributeSet
 import android.util.TypedValue
+import android.view.Surface
+import android.view.TextureView
 import android.view.View
 import android.view.ViewTreeObserver
 import android.widget.FrameLayout
@@ -65,16 +68,44 @@ class VariableBlurView @JvmOverloads constructor(
 
     // For tracking rendering state to prevent infinite recursion
     private var isRendering = false
+    private var hasFirstFrame = false
+    private var blurTextureView: TextureView? = null
+    private var blurSurface: Surface? = null
+
+    private val surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+        override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+            blurSurface?.release()
+            blurSurface = Surface(st)
+            blurController?.setOutputSurface(blurSurface, w, h)
+        }
+        override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
+            blurSurface?.release()
+            blurSurface = Surface(st)
+            blurController?.setOutputSurface(blurSurface, w, h)
+        }
+        override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+            blurController?.setOutputSurface(null, 0, 0)
+            blurSurface?.release()
+            blurSurface = null
+            return true
+        }
+        override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+    }
 
     private val preDrawListener = ViewTreeObserver.OnPreDrawListener {
-        if (isBlurEnabled && isLive && isShown) {
+        if (isBlurEnabled) {
             val controller = blurController
             if (controller != null) {
-                // Mark as dirty to capture updated background content
-                controller.invalidate()
-                if (controller.update()) {
-                    // Blur was updated, invalidate to redraw with new blur
-                    invalidate()
+                val needsFirstFrame = !hasFirstFrame
+                val hasPendingWork = controller.hasPendingDirty()
+                if (needsFirstFrame || hasPendingWork || (isLive && isShown)) {
+                    if (isLive) {
+                        controller.markContentDirty()
+                    }
+                    if (controller.update()) {
+                        hasFirstFrame = true
+                        invalidate()
+                    }
                 }
             }
         }
@@ -91,6 +122,12 @@ class VariableBlurView @JvmOverloads constructor(
         // Initialize blur controller
         blurController = VariableBlurController(context, blurConfig).apply {
             setGradient(blurGradient)
+        }
+
+        blurTextureView = TextureView(context).also { tv ->
+            tv.isOpaque = false
+            tv.surfaceTextureListener = surfaceTextureListener
+            addView(tv, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         }
     }
 
@@ -195,7 +232,6 @@ class VariableBlurView @JvmOverloads constructor(
     fun setBlurGradient(gradient: BlurGradient) {
         blurGradient = gradient
         blurController?.setGradient(gradient)
-        blurController?.invalidate()
         invalidate()
     }
 
@@ -212,7 +248,6 @@ class VariableBlurView @JvmOverloads constructor(
     fun setBlurConfig(config: BlurConfig) {
         blurConfig = config
         blurController?.setConfig(config)
-        blurController?.invalidate()
         invalidate()
     }
 
@@ -230,7 +265,6 @@ class VariableBlurView @JvmOverloads constructor(
     fun setOverlayColor(color: Int?) {
         blurConfig = blurConfig.copy(overlayColor = color?.takeIf { it != Color.TRANSPARENT })
         blurController?.setConfig(blurConfig)
-        blurController?.invalidate()
         invalidate()
     }
 
@@ -242,7 +276,6 @@ class VariableBlurView @JvmOverloads constructor(
     fun setDownsampleFactor(factor: Float) {
         blurConfig = blurConfig.copy(downsampleFactor = factor.coerceIn(1f, 16f))
         blurController?.setConfig(blurConfig)
-        blurController?.invalidate()
         invalidate()
     }
 
@@ -276,8 +309,7 @@ class VariableBlurView @JvmOverloads constructor(
         if (isLive != live) {
             isLive = live
             if (live) {
-                // Trigger an update when going live
-                blurController?.invalidate()
+                blurController?.markContentDirty()
                 invalidate()
             }
         }
@@ -361,18 +393,21 @@ class VariableBlurView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
-        // Remove pre-draw listener
         decorView?.viewTreeObserver?.removeOnPreDrawListener(preDrawListener)
 
-        // Release resources
+        blurController?.setOutputSurface(null)
+        blurSurface?.release()
+        blurSurface = null
+
         blurController?.release()
+        hasFirstFrame = false
 
         super.onDetachedFromWindow()
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        blurController?.invalidate()
+        blurController?.markContentDirty()
     }
 
     override fun draw(canvas: Canvas) {
@@ -394,7 +429,9 @@ class VariableBlurView @JvmOverloads constructor(
         if (isBlurEnabled && !isInEditMode) {
             isRendering = true
             try {
-                blurController?.draw(canvas)
+                if (blurController?.hasOutputSurface() != true) {
+                    blurController?.draw(canvas)
+                }
             } finally {
                 isRendering = false
             }

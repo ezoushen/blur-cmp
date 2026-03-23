@@ -27,7 +27,9 @@ data class BlurConfig(
     @ColorInt
     val preBlurTintColor: Int? = null,
     /** Android BlendMode ordinal for pre-blur tint. Only used when preBlurTintColor is set. */
-    val preBlurBlendModeOrdinal: Int? = null
+    val preBlurBlendModeOrdinal: Int? = null,
+    /** Pipeline strategy for blur capture. AUTO selects the best available. */
+    val pipelineStrategy: BlurPipelineStrategy = BlurPipelineStrategy.AUTO
 ) {
     init {
         require(radius >= 0f) { "Radius must be non-negative, was $radius" }

@@ -43,6 +43,7 @@ kotlin {
             implementation(libs.androidx.core.ktx)
             implementation(libs.androidx.appcompat)
             implementation(libs.androidx.annotation)
+            implementation("androidx.graphics:graphics-core:1.0.2")
         }
 
         iosMain.dependencies {
@@ -57,6 +58,18 @@ android {
 
     defaultConfig {
         minSdk = 23
+    }
+
+    buildFeatures {
+        buildConfig = true
+    }
+
+    defaultConfig {
+        // Enable blur performance profiling overlay and logcat timing.
+        // Set to true for quick profiling sessions, false for production.
+        // Can also be set via: ./gradlew assembleDebug -Pblur.perf.enabled=true
+        val perfEnabled = project.findProperty("blur.perf.enabled")?.toString()?.toBoolean() ?: false
+        buildConfigField("boolean", "BLUR_PERF_ENABLED", perfEnabled.toString())
     }
 
     compileOptions {
