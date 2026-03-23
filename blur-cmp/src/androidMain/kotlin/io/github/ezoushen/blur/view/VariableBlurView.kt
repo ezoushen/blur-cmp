@@ -392,10 +392,8 @@ class VariableBlurView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
-        // Remove pre-draw listener
         decorView?.viewTreeObserver?.removeOnPreDrawListener(preDrawListener)
 
-        // Release resources
         blurController?.setOutputSurface(null)
         blurSurface?.release()
         blurSurface = null

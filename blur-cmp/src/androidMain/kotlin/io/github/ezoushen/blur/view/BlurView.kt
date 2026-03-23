@@ -125,9 +125,8 @@ class BlurView @JvmOverloads constructor(
             renderNodeController = RenderNodeBlurController()
         } else {
             blurController = BlurController(context, blurConfig)
-        }
-
-        if (!useRenderNode) {
+            // TextureView output eliminates glReadPixels (~8ms on PowerVR/Mediatek GPUs).
+            // Produces harmless FrameEvents log warnings (non-HWUI EGL consumer).
             blurTextureView = TextureView(context).also { tv ->
                 tv.isOpaque = false
                 tv.surfaceTextureListener = surfaceTextureListener
@@ -418,10 +417,8 @@ class BlurView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
-        // Remove pre-draw listener
         decorView?.viewTreeObserver?.removeOnPreDrawListener(preDrawListener)
 
-        // Release resources
         blurController?.setOutputSurface(null)
         blurSurface?.release()
         blurSurface = null
@@ -469,6 +466,9 @@ class BlurView @JvmOverloads constructor(
                 if (useRenderNode) {
                     renderNodeController?.draw(canvas)
                 } else if (blurController?.hasOutputSurface() != true) {
+                    // Only draw via canvas when TextureView output is not active.
+                    // When TextureView is connected, the blur result is displayed
+                    // via eglSwapBuffers directly to the TextureView surface.
                     blurController?.draw(canvas)
                 }
             } finally {
