@@ -97,7 +97,7 @@ actual fun BlurOverlayHost(
                     },
                 )
 
-                LaunchedEffect(state.alpha) {
+                LaunchedEffect(state.alpha, config.isLive) {
                     val fadingOut = state.alpha < prevAlpha
                     blurView.alpha = state.alpha
                     blurView.setIsLive(config.isLive && state.alpha > 0f && !fadingOut)
@@ -122,7 +122,7 @@ actual fun BlurOverlayHost(
                     },
                 )
 
-                LaunchedEffect(state.alpha) {
+                LaunchedEffect(state.alpha, config.isLive) {
                     val fadingOut = state.alpha < prevAlpha
                     blurView.alpha = state.alpha
                     blurView.setIsLive(config.isLive && state.alpha > 0f && !fadingOut)
