@@ -264,3 +264,186 @@ Key: All demo tabs use BlurOverlay (backdrop blur) → Kawase pipeline on all AP
 - Net: 0.7ms SLOWER with zero-copy
 
 The real bottleneck on emulator is the **Kawase blur GPU passes** (15-20ms) due to software GL. On real devices this should be 1-3ms, making the total frame time 3-7ms — well within 16ms budget for 60fps.
+
+---
+
+## Real Device A/B Comparison: Baseline vs HardwareBufferCapture
+
+**Device:** Google Pixel 9 (Android 15, Tensor G4, Mali-G715)
+**Method:** Logcat micro-timing via BlurPerfMonitor, both builds instrumented identically
+**Tab:** Variable blur (Kawase pipeline)
+
+### Per-Component Breakdown
+
+```
+┌──────────────────────────┬─────────────────────────┬─────────────────────────┬──────────┐
+│ Component                │ BASELINE (main branch)  │ HW CAPTURE (optimized)  │ Delta    │
+│                          │ DecorViewCapture        │ HardwareBufferCapture   │          │
+│                          │ n=7132 frames           │ n=2117 frames           │          │
+├──────────────────────────┼─────────────────────────┼─────────────────────────┼──────────┤
+│ CAPTURE PHASE            │                         │                         │          │
+│  DecorView SW raster     │ 2.74ms                  │ —                       │          │
+│  HW syncAndDraw          │ —                       │ 1.01ms                  │          │
+│  bitmap.copy(ARGB_8888)  │ —                       │ 2.11ms                  │          │
+│  capture subtotal        │ 2.74ms                  │ 4.56ms (+overhead)      │ +1.82ms  │
+├──────────────────────────┼─────────────────────────┼─────────────────────────┼──────────┤
+│ BLUR PHASE               │                         │                         │          │
+│  texImage2D upload       │ 0.68ms                  │ 0.72ms                  │  ~same   │
+│  Kawase pyramid          │ 5.01ms                  │ 4.52ms                  │ -0.49ms  │
+│  gradient composite      │ 0.53ms                  │ 0.18ms                  │ -0.35ms  │
+│  output (rdPx vs swap)   │ 0.48ms (glReadPixels)   │ 0.42ms (eglSwapBuffers) │ -0.06ms  │
+│  blur subtotal           │ 6.80ms                  │ 5.94ms                  │ -0.86ms  │
+├──────────────────────────┼─────────────────────────┼─────────────────────────┼──────────┤
+│ TOTAL PIPELINE           │ 9.59ms (σ=2.2ms)        │ 10.59ms (σ=2.2ms)       │ +1.0ms   │
+│ CPU↔GPU crossings        │ 4                       │ 2                       │          │
+└──────────────────────────┴─────────────────────────┴─────────────────────────┴──────────┘
+```
+
+### Analysis
+
+1. **HardwareBufferCapture is 1.82ms SLOWER than DecorViewCapture** on real hardware.
+   - `syncAndDraw(waitForPresent=true)` blocks 1.01ms for GPU rasterization
+   - `bitmap.copy(ARGB_8888)` costs 2.11ms for GPU→CPU transfer
+   - Combined: 3.12ms + overhead vs DecorViewCapture's 2.74ms
+   - HWUI display list replay to software canvas is highly optimized on real devices
+
+2. **TextureView output saves 0.06ms** vs glReadPixels — negligible on real hardware.
+
+3. **Blur phase is 0.86ms faster** in the optimized build, but this is likely noise
+   from different session conditions, not a real improvement from the capture change.
+
+4. **Net result: HardwareBufferCapture + TextureView is ~10% slower** than the
+   baseline DecorViewCapture + glReadPixels pipeline on real Pixel 9 hardware.
+
+### Decision: Revert HardwareBufferCapture for Kawase Pipeline
+
+The HardwareBufferCapture optimization was developed based on emulator measurements
+where software GL inflated crossing costs by 3-5x. On real hardware with dedicated
+GPUs, the crossings are cheap and the HW capture path adds overhead.
+
+**Action:** Revert to DecorViewCapture for the Kawase/LEGACY pipeline.
+Keep TextureView output (eliminates glReadPixels + drawBitmap, saves 2 crossings).
+
+**Target pipeline (post-revert):**
+```
+decorView.draw(softwareCanvas) ①GPU→CPU → texImage2D ②CPU→GPU
+→ Kawase blur → TextureView Surface (0 crossings on output)
+```
+
+CPU↔GPU crossings: 2 (same as baseline for capture, but 0 on output vs 2 in baseline)
+
+---
+
+## GPU Blur Pipeline Optimizations
+
+Six optimizations were applied to the Kawase blur pipeline and validated
+on a Google Pixel 9 (Android 15, Tensor G4, Mali-G715) via BrowserStack.
+
+### Optimization Summary
+
+```
+┌─────┬─────────────────────────────────┬──────────┬──────────────┐
+│ #   │ Optimization                    │ Target   │ Impact       │
+├─────┼─────────────────────────────────┼──────────┼──────────────┤
+│ 1   │ Shared downsample chain         │ Pyramid  │ -1.15ms      │
+│     │ (single chain, shallowest-first │          │              │
+│     │ upsample reuses work textures)  │          │              │
+├─────┼─────────────────────────────────┼──────────┼──────────────┤
+│ 2   │ Selective texture sampling      │ Shader   │ ~0ms         │
+│     │ (2 fetches/pixel vs 6)          │          │ (cache-warm) │
+├─────┼─────────────────────────────────┼──────────┼──────────────┤
+│ 3   │ Cache uniform/attribute locs    │ CPU→GPU  │ -0.5ms       │
+│     │ (resolve once after compile)    │          │              │
+├─────┼─────────────────────────────────┼──────────┼──────────────┤
+│ 4   │ SurfaceTexture GPU capture      │ Capture  │ -1.2ms       │
+│     │ (lockHardwareCanvas + OES tex)  │          │              │
+├─────┼─────────────────────────────────┼──────────┼──────────────┤
+│ 5   │ Direct write to pyramid FBO     │ Pyramid  │ -0.5ms       │
+│     │ (skip final full-res blit)      │          │              │
+├─────┼─────────────────────────────────┼──────────┼──────────────┤
+│ 6   │ Reduce GL state changes         │ Driver   │ -0.1ms       │
+│     │ (hoist glUseProgram, batch VAs) │          │              │
+└─────┴─────────────────────────────────┴──────────┴──────────────┘
+```
+
+### Progressive Results (Pixel 9, Variable Blur, 270x600)
+
+```
+┌────────────────────┬────────┬────────┬────────┬────────┬────────┬────────┐
+│ Build              │ n      │ avg    │ p50    │ p75    │ p90    │ σ      │
+├────────────────────┼────────┼────────┼────────┼────────┼────────┼────────┤
+│ BASELINE (main)    │ 7132   │ 9.59ms │ 8.91ms │ 10.1ms │ 12.2ms │ 2.2ms  │
+│ Opt #1+2+3         │ 1668   │ 7.20ms │ 6.59ms │ 7.43ms │ 9.22ms │ 2.0ms  │
+│ Opt #1+2+3+5       │ 1203   │ 6.52ms │ 6.10ms │ 6.72ms │ 8.25ms │ 1.6ms  │
+│ Opt #1+2+3+5+6     │ 1426   │ 6.53ms │ 6.07ms │ 6.76ms │ 8.14ms │ 1.9ms  │
+│ ALL (#1-6)         │ 1458   │ 5.83ms │ 5.55ms │ 6.43ms │ 7.40ms │ 1.4ms  │
+└────────────────────┴────────┴────────┴────────┴────────┴────────┴────────┘
+```
+
+### Per-Component Breakdown
+
+```
+┌──────────────────────┬───────────┬───────────┬──────────┐
+│ Component            │ BASELINE  │ OPTIMIZED │ Change   │
+├──────────────────────┼───────────┼───────────┼──────────┤
+│ Capture              │ 2.99ms    │ 1.78ms    │ -40%     │
+│  (DecorViewCapture)  │ (CPU SW)  │ (GPU HW)  │          │
+│ Upload               │ 0.61ms    │ 0.11ms    │ -82%     │
+│  (texImage2D)        │           │ (OES tex) │          │
+│ Kawase pyramid       │ 4.75ms    │ 2.16ms    │ -55%     │
+│ Gradient composite   │ 0.18ms    │ 0.15ms    │ -17%     │
+│ Output (readPixels)  │ 0.48ms    │ 0.97ms    │ +102%    │
+├──────────────────────┼───────────┼───────────┼──────────┤
+│ TOTAL                │ 9.59ms    │ 5.83ms    │ -39%     │
+│ p50                  │ 8.91ms    │ 5.55ms    │ -38%     │
+└──────────────────────┴───────────┴───────────┴──────────┘
+```
+
+### Known Issue: FrameEvents Log Spam
+
+The SurfaceTexture capture path (Opt #4) uses `lockHardwareCanvas()` → `updateTexImage()`
+which produces `E/FrameEvents: updateAcquireFence: Did not find frame` on every frame.
+
+**Root cause:** `lockHardwareCanvas` produces frames through HWUI's rendering path, but
+`updateTexImage()` consumes them from our non-HWUI EGL context. The consumer-side
+`FrameEventHistory` doesn't have matching entries from the producer, so each `acquireBuffer`
+fails the frame lookup.
+
+**Impact:** Cosmetic only. No visual artifacts, no frame drops, no functional impact.
+The error cannot be suppressed from app code (it's a native `ALOGE` in
+`frameworks/native/libs/gui/FrameTimestamps.cpp`).
+
+**Alternatives tested:**
+- Single-buffer SurfaceTexture: deadlocks (producer blocks waiting for consumer)
+- OnFrameAvailableListener: no effect on real devices
+- TextureView output: same error (any non-HWUI EGL consumer triggers it)
+- DecorViewCapture (no BufferQueue): zero errors but 1.2ms slower
+
+### Final Pipeline Architecture (API 26+)
+
+```
+lockHardwareCanvas(Surface)     ← GPU: HWUI records display list (~0.01ms)
+sourceView.draw(hwCanvas)       ← GPU: display list refs, near-zero cost
+unlockCanvasAndPost             ← GPU: queues to SurfaceTexture BufferQueue
+updateTexImage()                ← GPU: updates OES texture (zero-copy, ~0.1ms)
+  ↓ GL_TEXTURE_EXTERNAL_OES (no CPU→GPU crossing)
+Kawase pyramid (shared DS)      ← GPU-only (~2.2ms)
+gradient composite              ← GPU-only (~0.2ms)
+glReadPixels → bitmap           ← GPU→CPU readback (~1.0ms)
+canvas.drawBitmap in onDraw     ← HWUI re-upload (negligible)
+```
+
+### Performance Profiling
+
+Instrumentation is gated behind `BuildConfig.BLUR_PERF_ENABLED` (default: false).
+When disabled, all timing and logging code is eliminated by R8 in release builds.
+
+To enable for profiling:
+```bash
+./gradlew :demoApp:assembleDebug -Pblur.perf.enabled=true
+```
+
+This enables:
+- On-screen `PerfOverlay` composable with per-component timing
+- `BlurPerf` logcat tag with microsecond-precision breakdown
+- `BlurPerfMonitor` singleton for programmatic access
