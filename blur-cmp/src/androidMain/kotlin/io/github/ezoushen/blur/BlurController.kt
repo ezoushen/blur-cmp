@@ -68,7 +68,8 @@ class BlurController(
 
     private var lastWidth = 0
     private var lastHeight = 0
-    private var isDirty = true
+    private var configDirty = false
+    private var contentDirty = true  // first-frame guarantee
     private var isInitialized = false
 
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
@@ -85,7 +86,7 @@ class BlurController(
     fun init(blurView: View, sourceView: View) {
         this.blurView = blurView
         this.sourceView = sourceView
-        this.isDirty = true
+        this.contentDirty = true
         this.isInitialized = true
     }
 
@@ -100,8 +101,13 @@ class BlurController(
             if (this.config.pipelineStrategy != config.pipelineStrategy) {
                 resolvedStrategy = null
             }
+            if (this.config.preBlurTintColor != config.preBlurTintColor ||
+                this.config.preBlurBlendModeOrdinal != config.preBlurBlendModeOrdinal) {
+                contentDirty = true
+            } else {
+                configDirty = true
+            }
             this.config = config
-            isDirty = true
         }
     }
 
@@ -116,8 +122,16 @@ class BlurController(
      * Call this when the content behind the blur view has changed.
      */
     fun invalidate() {
-        isDirty = true
+        configDirty = true
+        contentDirty = true
     }
+
+    fun markContentDirty() {
+        contentDirty = true
+    }
+
+    fun hasPendingDirty(): Boolean =
+        configDirty || contentDirty
 
     /**
      * Checks if the controller is currently capturing.
@@ -180,10 +194,11 @@ class BlurController(
 
         if (view.width == 0 || view.height == 0) return false
 
-        // Check if dimensions changed
+        // Check if dimensions changed — always requires full recapture
         val dimensionsChanged = view.width != lastWidth || view.height != lastHeight
+        if (dimensionsChanged) contentDirty = true
 
-        if (!isDirty && !dimensionsChanged) {
+        if (!configDirty && !contentDirty) {
             return false
         }
 
@@ -202,6 +217,11 @@ class BlurController(
         val scaledWidth = (view.width / effectiveDownsample).toInt().coerceAtLeast(1)
         val scaledHeight = (view.height / effectiveDownsample).toInt().coerceAtLeast(1)
 
+        // Promote configDirty to contentDirty if scaled dimensions changed
+        if (captureBitmap != null && (captureBitmap?.width != scaledWidth || captureBitmap?.height != scaledHeight)) {
+            contentDirty = true
+        }
+
         // Scale radius to maintain consistent blur appearance across different downsample factors
         val scaledRadius = config.radius * (BASELINE_DOWNSAMPLE / effectiveDownsample)
 
@@ -213,9 +233,24 @@ class BlurController(
         val strategy = resolveStrategy()
 
         val t0 = if (BlurPerfMonitor.enabled) System.nanoTime() else 0L
-        val success = when (strategy) {
-            BlurPipelineStrategy.SURFACE_TEXTURE -> updateSurfaceTexture(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
-            else -> updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
+        val success = if (contentDirty) {
+            when (strategy) {
+                BlurPipelineStrategy.SURFACE_TEXTURE -> updateSurfaceTexture(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
+                else -> updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
+            }
+        } else {
+            // configDirty only: skip capture, re-blur cached bitmap
+            val cached = captureBitmap
+            if (cached != null) {
+                blurredBitmap = algorithm.blur(cached, scaledRadius)
+                true
+            } else {
+                // No cached bitmap yet — fall back to full capture
+                when (strategy) {
+                    BlurPipelineStrategy.SURFACE_TEXTURE -> updateSurfaceTexture(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
+                    else -> updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
+                }
+            }
         }
         if (BlurPerfMonitor.enabled) {
             val totalUs = (System.nanoTime() - t0) / 1000
@@ -226,7 +261,8 @@ class BlurController(
 
         lastWidth = view.width
         lastHeight = view.height
-        isDirty = false
+        configDirty = false
+        contentDirty = false
 
         return true
     }
@@ -383,7 +419,8 @@ class BlurController(
 
         lastWidth = 0
         lastHeight = 0
-        isDirty = true
+        configDirty = false
+        contentDirty = true
         isInitialized = false
     }
 
