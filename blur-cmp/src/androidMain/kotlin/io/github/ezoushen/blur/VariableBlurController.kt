@@ -71,7 +71,8 @@ class VariableBlurController(
 
     private var lastWidth = 0
     private var lastHeight = 0
-    private var isDirty = true
+    private var configDirty = false
+    private var contentDirty = true  // first-frame guarantee
     private var isInitialized = false
 
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
@@ -88,7 +89,7 @@ class VariableBlurController(
     fun init(blurView: View, sourceView: View) {
         this.blurView = blurView
         this.sourceView = sourceView
-        this.isDirty = true
+        this.contentDirty = true
         this.isInitialized = true
 
         // Set initial overlay color from config
@@ -104,7 +105,7 @@ class VariableBlurController(
         if (this.gradient != gradient) {
             this.gradient = gradient
             algorithm.setGradient(gradient)
-            isDirty = true
+            configDirty = true
         }
     }
 
@@ -123,9 +124,15 @@ class VariableBlurController(
             if (this.config.pipelineStrategy != config.pipelineStrategy) {
                 resolvedStrategy = null
             }
+            // Pre-blur tint changes must recapture (prevents tint stacking on cached bitmap)
+            if (this.config.preBlurTintColor != config.preBlurTintColor ||
+                this.config.preBlurBlendModeOrdinal != config.preBlurBlendModeOrdinal) {
+                contentDirty = true
+            } else {
+                configDirty = true
+            }
             this.config = config
             algorithm.setOverlayColor(config.overlayColor)
-            isDirty = true
         }
     }
 
@@ -140,8 +147,16 @@ class VariableBlurController(
      * Call this when the content behind the blur view has changed.
      */
     fun invalidate() {
-        isDirty = true
+        configDirty = true
+        contentDirty = true
     }
+
+    fun markContentDirty() {
+        contentDirty = true
+    }
+
+    fun hasPendingDirty(): Boolean =
+        configDirty || contentDirty
 
     /**
      * Checks if the controller is currently capturing.
@@ -209,8 +224,9 @@ class VariableBlurController(
 
         // Check if dimensions changed
         val dimensionsChanged = view.width != lastWidth || view.height != lastHeight
+        if (dimensionsChanged) contentDirty = true
 
-        if (!isDirty && !dimensionsChanged) {
+        if (!configDirty && !contentDirty) {
             return false
         }
 
@@ -230,15 +246,35 @@ class VariableBlurController(
         // Scale the gradient's max radius for downsample-independent appearance
         val scaledMaxRadius = currentGradient.maxRadius * (BASELINE_DOWNSAMPLE / effectiveDownsample)
 
+        // Promote configDirty to contentDirty if scaled dimensions changed
+        if (captureBitmap != null && (captureBitmap?.width != scaledWidth || captureBitmap?.height != scaledHeight)) {
+            contentDirty = true
+        }
+
         if (!algorithm.prepare(context, scaledWidth, scaledHeight, scaledMaxRadius)) {
             return false
         }
 
         val strategy = resolveStrategy()
         val t0 = if (BlurPerfMonitor.enabled) System.nanoTime() else 0L
-        val success = when (strategy) {
-            BlurPipelineStrategy.SURFACE_TEXTURE -> updateSurfaceTexture(view, source, scaledWidth, scaledHeight, scaledMaxRadius, effectiveDownsample)
-            else -> updateLegacy(view, source, scaledWidth, scaledHeight, scaledMaxRadius, effectiveDownsample)
+        val success = if (contentDirty) {
+            when (strategy) {
+                BlurPipelineStrategy.SURFACE_TEXTURE -> updateSurfaceTexture(view, source, scaledWidth, scaledHeight, scaledMaxRadius, effectiveDownsample)
+                else -> updateLegacy(view, source, scaledWidth, scaledHeight, scaledMaxRadius, effectiveDownsample)
+            }
+        } else {
+            // configDirty only: skip capture, re-blur cached bitmap
+            val cached = captureBitmap
+            if (cached != null) {
+                blurredBitmap = algorithm.blur(cached, scaledMaxRadius)
+                true
+            } else {
+                // No cached bitmap yet — fall back to full capture
+                when (strategy) {
+                    BlurPipelineStrategy.SURFACE_TEXTURE -> updateSurfaceTexture(view, source, scaledWidth, scaledHeight, scaledMaxRadius, effectiveDownsample)
+                    else -> updateLegacy(view, source, scaledWidth, scaledHeight, scaledMaxRadius, effectiveDownsample)
+                }
+            }
         }
         if (BlurPerfMonitor.enabled) {
             val totalUs = (System.nanoTime() - t0) / 1000
@@ -250,7 +286,8 @@ class VariableBlurController(
 
         lastWidth = view.width
         lastHeight = view.height
-        isDirty = false
+        configDirty = false
+        contentDirty = false
 
         return true
     }
@@ -397,7 +434,8 @@ class VariableBlurController(
 
         lastWidth = 0
         lastHeight = 0
-        isDirty = true
+        configDirty = false
+        contentDirty = true
         isInitialized = false
     }
 
