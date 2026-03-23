@@ -95,6 +95,9 @@ class BlurView @JvmOverloads constructor(
             if (useRenderNode) {
                 val controller = renderNodeController
                 if (controller != null && (needsFirstFrame || (isLive && isShown))) {
+                    if (isLive) {
+                        controller.invalidate()
+                    }
                     if (controller.update()) {
                         hasFirstFrame = true
                         invalidate()
