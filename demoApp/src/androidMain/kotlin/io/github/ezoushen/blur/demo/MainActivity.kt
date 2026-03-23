@@ -6,11 +6,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import io.github.ezoushen.blur.BlurPerfMonitor
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -19,12 +18,13 @@ class MainActivity : ComponentActivity() {
         setContent {
             Box(Modifier.fillMaxSize()) {
                 BlurCmpDemoApp()
-                PerfOverlay(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .statusBarsPadding()
-                        .padding(top = 4.dp, end = 4.dp)
-                )
+                if (BlurPerfMonitor.enabled) {
+                    PerfOverlay(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .statusBarsPadding()
+                    )
+                }
             }
         }
     }

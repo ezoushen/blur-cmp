@@ -60,6 +60,18 @@ android {
         minSdk = 23
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+
+    defaultConfig {
+        // Enable blur performance profiling overlay and logcat timing.
+        // Set to true for quick profiling sessions, false for production.
+        // Can also be set via: ./gradlew assembleDebug -Pblur.perf.enabled=true
+        val perfEnabled = project.findProperty("blur.perf.enabled")?.toString()?.toBoolean() ?: false
+        buildConfigField("boolean", "BLUR_PERF_ENABLED", perfEnabled.toString())
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11

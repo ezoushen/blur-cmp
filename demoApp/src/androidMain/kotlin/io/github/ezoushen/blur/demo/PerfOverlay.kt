@@ -23,7 +23,6 @@ import kotlinx.coroutines.delay
 fun PerfOverlay(modifier: Modifier = Modifier) {
     var tick by remember { mutableLongStateOf(0L) }
 
-    // Poll the monitor every 200ms
     LaunchedEffect(Unit) {
         while (true) {
             delay(200)
@@ -31,32 +30,31 @@ fun PerfOverlay(modifier: Modifier = Modifier) {
         }
     }
 
-    // Read values (tick triggers recomposition)
     @Suppress("UNUSED_EXPRESSION")
     tick
 
-    val totalMs = BlurPerfMonitor.lastTotalUs / 1000f
-    val blurMs = BlurPerfMonitor.lastBlurUs / 1000f
-    val strategy = BlurPerfMonitor.lastStrategy
-    val dim = BlurPerfMonitor.lastDimension
-    val frames = BlurPerfMonitor.frameCount
-
+    val m = BlurPerfMonitor
     val monoStyle = TextStyle(
         color = Color.Yellow,
-        fontSize = 11.sp,
+        fontSize = 10.sp,
         fontFamily = FontFamily.Monospace,
+        lineHeight = 12.sp,
     )
 
     Column(
         modifier = modifier
-            .background(Color.Black.copy(alpha = 0.7f))
-            .padding(6.dp)
+            .background(Color.Black.copy(alpha = 0.8f))
+            .padding(4.dp)
     ) {
-        BasicText("BLUR PERF", style = monoStyle.copy(color = Color.Cyan))
-        BasicText("strategy: $strategy", style = monoStyle)
-        BasicText("dim: $dim", style = monoStyle)
-        BasicText("total: ${"%.1f".format(totalMs)} ms", style = monoStyle)
-        BasicText("blur:  ${"%.1f".format(blurMs)} ms", style = monoStyle)
-        BasicText("frames: $frames", style = monoStyle)
+        BasicText("BLUR PERF", style = monoStyle.copy(color = Color.Cyan, fontSize = 11.sp))
+        BasicText("${m.lastStrategy} ${m.lastDimension}", style = monoStyle)
+        BasicText("total: ${"%.1f".format(m.lastTotalUs/1000f)}ms", style = monoStyle.copy(color = Color.Green))
+        BasicText("captr: ${"%.1f".format(m.lastCaptureUs/1000f)}ms  [GPU>CPU]", style = monoStyle)
+        BasicText("─blur────", style = monoStyle.copy(color = Color.Gray))
+        BasicText("uplod: ${"%.1f".format(m.lastUploadUs/1000f)}ms  [CPU>GPU]", style = monoStyle)
+        BasicText("pyrmd: ${"%.1f".format(m.lastPyramidUs/1000f)}ms  [GPU]", style = monoStyle)
+        BasicText("comps: ${"%.1f".format(m.lastCompositeUs/1000f)}ms  [GPU]", style = monoStyle)
+        BasicText("swap:  ${"%.1f".format(m.lastSwapUs/1000f)}ms  [GPU]", style = monoStyle)
+        BasicText("fr: ${m.frameCount}", style = monoStyle.copy(color = Color.Gray))
     }
 }
