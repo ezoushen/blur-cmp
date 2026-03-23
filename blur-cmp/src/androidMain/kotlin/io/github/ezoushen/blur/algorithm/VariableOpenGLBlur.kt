@@ -16,7 +16,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.core.graphics.createBitmap
 import androidx.opengl.EGLExt
 import androidx.opengl.EGLImageKHR
+import android.util.Log
 import io.github.ezoushen.blur.BlurGradient
+import io.github.ezoushen.blur.BlurPerfMonitor
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -60,6 +62,41 @@ class VariableOpenGLBlur : BlurAlgorithm {
     private var compositeProgram = 0
     private var blitProgram = 0
 
+    // Cached uniform/attribute locations (resolved once after shader compilation)
+    private var dsHalfPixelLoc = -1
+    private var dsPositionLoc = -1
+    private var dsTexCoordLoc = -1
+    private var dsTextureLoc = -1
+    private var usHalfPixelLoc = -1
+    private var usPositionLoc = -1
+    private var usTexCoordLoc = -1
+    private var usTextureLoc = -1
+    private var blitPositionLoc = -1
+    private var blitTexCoordLoc = -1
+    private var blitTextureLoc = -1
+    private var dsExtTextureLoc = -1
+    private var dsExtHalfPixelLoc = -1
+    private var dsExtPositionLoc = -1
+    private var dsExtTexCoordLoc = -1
+    private var compPositionLoc = -1
+    private var compTexCoordLoc = -1
+    private var compLevelLocs = IntArray(MAX_PYRAMID_LEVELS) { -1 }
+    private var compAspectRatioLoc = -1
+    private var compMinLevelLoc = -1
+    private var compMaxLevelLoc = -1
+    private var compHasOverlayLoc = -1
+    private var compOverlayColorLoc = -1
+    private var compGradientTypeLoc = -1
+    private var compGradientStartLoc = -1
+    private var compGradientEndLoc = -1
+    private var compGradientCenterLoc = -1
+    private var compGradientRadiusLoc = -1
+    private var compStartRadiusLoc = -1
+    private var compEndRadiusLoc = -1
+    private var compStopCountLoc = -1
+    private var compStopPositionLocs = IntArray(MAX_STOPS) { -1 }
+    private var compStopRadiiLocs = IntArray(MAX_STOPS) { -1 }
+
     // EGLImage zero-copy input (API 29+)
     private var inputTexture = 0
     private var currentEglImage: EGLImageKHR? = null
@@ -80,12 +117,17 @@ class VariableOpenGLBlur : BlurAlgorithm {
     private var outputTexture = 0
 
     private var outputBitmap: Bitmap? = null
+    private var readPixelsBuffer: ByteBuffer? = null
     private var lastWidth = 0
     private var lastHeight = 0
     private var isInitialized = false
+    private var hasEglImage = false
+    private var hasExternalOes = false
 
     private var currentGradient: BlurGradient? = null
     private var currentOverlayColor: Int? = null
+    // Pre-sorted stops cache (avoids per-frame sortedBy allocation)
+    private var sortedStops: List<Pair<Float, Float>>? = null
 
     private val vertexBuffer: FloatBuffer by lazy {
         ByteBuffer.allocateDirect(QUAD_VERTICES.size * 4)
@@ -122,6 +164,11 @@ class VariableOpenGLBlur : BlurAlgorithm {
      */
     fun setGradient(gradient: BlurGradient) {
         currentGradient = gradient
+        sortedStops = when (gradient) {
+            is BlurGradient.LinearWithStops -> gradient.stops.sortedBy { it.first }.take(MAX_STOPS)
+            is BlurGradient.RadialWithStops -> gradient.stops.sortedBy { it.first }.take(MAX_STOPS)
+            else -> null
+        }
     }
 
     /**
@@ -188,9 +235,8 @@ class VariableOpenGLBlur : BlurAlgorithm {
                 }
                 return output
             }
-            val pixels = IntArray(input.width * input.height)
-            input.getPixels(pixels, 0, input.width, 0, 0, input.width, input.height)
-            output.setPixels(pixels, 0, output.width, 0, 0, output.width, output.height)
+            val c = android.graphics.Canvas(output)
+            c.drawBitmap(input, 0f, 0f, null)
             return output
         }
 
@@ -213,33 +259,31 @@ class VariableOpenGLBlur : BlurAlgorithm {
                 ((ln(maxRadius / BASE_SIGMA) / LN_2).toInt() + 1).coerceIn(1, MAX_PYRAMID_LEVELS - 1)
 
             // Upload input to level 0: zero-copy if available, else legacy texImage2D
+            val perf = BlurPerfMonitor.enabled
+            val t0 = if (perf) System.nanoTime() else 0L
             val hasEglImageInput = inputTexture != 0 && currentEglImage != null
             val hasExternalInput = externalInputTexture != 0 && downsampleExternalProgram != 0
             if (hasEglImageInput) {
-                // Zero-copy: blit from inputTexture (EGLImage) to pyramid level 0
                 blitTexture(inputTexture, pyramidFramebuffers!![0], lastWidth, lastHeight)
             } else if (hasExternalInput) {
-                // SurfaceTexture: blit from external OES texture to pyramid level 0
                 blitExternalTexture(externalInputTexture, pyramidFramebuffers!![0], lastWidth, lastHeight)
             } else {
                 GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, pyramidTextures!![0])
                 android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, input, 0)
             }
+            val t1 = if (perf) System.nanoTime() else 0L
 
-            // Generate blur pyramid only for levels in the required range
             generateBlurPyramid(minLevel, maxLevel)
+            val t2 = if (perf) System.nanoTime() else 0L
 
-            // Composite final result using gradient (writes to outputFramebuffer)
             compositeWithGradient(gradient, minLevel, maxLevel)
+            val t3 = if (perf) System.nanoTime() else 0L
 
             val useWindowSurface = hasOutputSurface()
             if (useWindowSurface) {
-                // Blit the composite result to the window surface
                 try {
                     EGL14.eglMakeCurrent(eglDisplay, windowSurface, windowSurface, eglContext)
                     GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-                    // Viewport must match the TextureView's actual size, not the
-                    // downsampled blur size. The blit shader scales the texture.
                     val vw = if (surfaceWidth > 0) surfaceWidth else lastWidth
                     val vh = if (surfaceHeight > 0) surfaceHeight else lastHeight
                     GLES20.glViewport(0, 0, vw, vh)
@@ -248,16 +292,31 @@ class VariableOpenGLBlur : BlurAlgorithm {
                 } finally {
                     EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
                 }
+                if (perf) {
+                    val swapUs = (System.nanoTime() - t3) / 1000
+                    Log.i("BlurPerf", "    VarGL upload=${(t1-t0)/1000}us pyramid=${(t2-t1)/1000}us composite=${(t3-t2)/1000}us swap=${swapUs}us total=${(t1-t0+t2-t1+t3-t2)/1000+swapUs}us")
+                    BlurPerfMonitor.reportBlur((t1-t0)/1000, (t2-t1)/1000, (t3-t2)/1000, swapUs)
+                }
                 return output
             }
 
-            // Fallback: glReadPixels
+            // Fallback: glReadPixels (reuse cached buffer)
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, outputFramebuffer)
-            val buffer = ByteBuffer.allocateDirect(lastWidth * lastHeight * 4)
-                .order(ByteOrder.nativeOrder())
+            val bufSize = lastWidth * lastHeight * 4
+            var buffer = readPixelsBuffer
+            if (buffer == null || buffer.capacity() < bufSize) {
+                buffer = ByteBuffer.allocateDirect(bufSize).order(ByteOrder.nativeOrder())
+                readPixelsBuffer = buffer
+            }
+            buffer.clear()
             GLES20.glReadPixels(0, 0, lastWidth, lastHeight, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buffer)
             buffer.rewind()
             output.copyPixelsFromBuffer(buffer)
+            if (perf) {
+                val readPixelsUs = (System.nanoTime() - t3) / 1000
+                Log.i("BlurPerf", "    VarGL upload=${(t1-t0)/1000}us pyramid=${(t2-t1)/1000}us composite=${(t3-t2)/1000}us readPixels=${readPixelsUs}us total=${(t1-t0+t2-t1+t3-t2)/1000+readPixelsUs}us")
+                BlurPerfMonitor.reportBlur((t1-t0)/1000, (t2-t1)/1000, (t3-t2)/1000, readPixelsUs)
+            }
 
             return output
         } catch (e: Exception) {
@@ -282,21 +341,69 @@ class VariableOpenGLBlur : BlurAlgorithm {
         val pyramidFbs = pyramidFramebuffers ?: return
         val pyramidTexs = pyramidTextures ?: return
 
-        // Only generate levels that will actually be sampled
-        // If minLevel > 1, we can skip generating lower blur levels (performance optimization)
-        val startLevel = minLevel.coerceAtLeast(1) // Level 0 is original, never generated
+        val startLevel = minLevel.coerceAtLeast(1)
+        val offset = 1.0f
+
+        // Step 1: Downsample chain — one program bind, one attrib setup for all passes
+        GLES20.glUseProgram(downsampleProgram)
+        GLES20.glEnableVertexAttribArray(dsPositionLoc)
+        GLES20.glVertexAttribPointer(dsPositionLoc, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
+        GLES20.glEnableVertexAttribArray(dsTexCoordLoc)
+        GLES20.glVertexAttribPointer(dsTexCoordLoc, 2, GLES20.GL_FLOAT, false, 0, texCoordBuffer)
+
+        var currentTexture = pyramidTexs[0]
+        var cw = lastWidth
+        var ch = lastHeight
+
+        for (i in 0 until maxLevel) {
+            val tw = (cw / 2).coerceAtLeast(1)
+            val th = (ch / 2).coerceAtLeast(1)
+
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, workFbs[i + 1])
+            GLES20.glViewport(0, 0, tw, th)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, currentTexture)
+            GLES20.glUniform2f(dsHalfPixelLoc, offset * 0.5f / cw, offset * 0.5f / ch)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+
+            currentTexture = workTexs[i + 1]
+            cw = tw
+            ch = th
+        }
+
+        GLES20.glDisableVertexAttribArray(dsPositionLoc)
+        GLES20.glDisableVertexAttribArray(dsTexCoordLoc)
+
+        // Step 2: Upsample — one program bind for all levels and passes
+        GLES20.glUseProgram(upsampleProgram)
+        GLES20.glEnableVertexAttribArray(usPositionLoc)
+        GLES20.glVertexAttribPointer(usPositionLoc, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
+        GLES20.glEnableVertexAttribArray(usTexCoordLoc)
+        GLES20.glVertexAttribPointer(usTexCoordLoc, 2, GLES20.GL_FLOAT, false, 0, texCoordBuffer)
 
         for (level in startLevel..maxLevel) {
-            // GPU-only blit: copy pyramid level 0 (original) to work texture 0
-            // This uses render-to-texture instead of slow glReadPixels
-            blitTexture(pyramidTexs[0], workFbs[0], lastWidth, lastHeight)
+            var upTex = workTexs[level]
+            var uw = (lastWidth shr level).coerceAtLeast(1)
+            var uh = (lastHeight shr level).coerceAtLeast(1)
 
-            // Perform blur with 'level' iterations
-            performBlurPasses(workFbs, workTexs, level)
+            for (i in level - 1 downTo 0) {
+                val tw = if (i == 0) lastWidth else (lastWidth shr i).coerceAtLeast(1)
+                val th = if (i == 0) lastHeight else (lastHeight shr i).coerceAtLeast(1)
 
-            // Copy result to pyramid level (also GPU-only)
-            blitTexture(workTexs[0], pyramidFbs[level], lastWidth, lastHeight)
+                val targetFb = if (i == 0) pyramidFbs[level] else workFbs[i]
+                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, targetFb)
+                GLES20.glViewport(0, 0, tw, th)
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, upTex)
+                GLES20.glUniform2f(usHalfPixelLoc, offset * 0.5f / uw, offset * 0.5f / uh)
+                GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+
+                upTex = if (i == 0) pyramidTexs[level] else workTexs[i]
+                uw = tw
+                uh = th
+            }
         }
+
+        GLES20.glDisableVertexAttribArray(usPositionLoc)
+        GLES20.glDisableVertexAttribArray(usTexCoordLoc)
     }
 
     /**
@@ -310,11 +417,9 @@ class VariableOpenGLBlur : BlurAlgorithm {
         GLES20.glUseProgram(blitProgram)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, srcTexture)
+        GLES20.glUniform1i(blitTextureLoc, 0)
 
-        val textureLoc = GLES20.glGetUniformLocation(blitProgram, "uTexture")
-        GLES20.glUniform1i(textureLoc, 0)
-
-        drawQuad(blitProgram, flipY)
+        drawQuadCached(blitPositionLoc, blitTexCoordLoc, flipY)
     }
 
     /**
@@ -330,74 +435,14 @@ class VariableOpenGLBlur : BlurAlgorithm {
         GLES20.glUseProgram(downsampleExternalProgram)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, srcTexture)
+        GLES20.glUniform1i(dsExtTextureLoc, 0)
+        GLES20.glUniform2f(dsExtHalfPixelLoc, 0f, 0f)
 
-        val textureLoc = GLES20.glGetUniformLocation(downsampleExternalProgram, "uTexture")
-        GLES20.glUniform1i(textureLoc, 0)
-
-        // Set half pixel to zero for a simple blit (no blur)
-        val halfPixelLoc = GLES20.glGetUniformLocation(downsampleExternalProgram, "uHalfPixel")
-        GLES20.glUniform2f(halfPixelLoc, 0f, 0f)
-
-        drawQuad(downsampleExternalProgram)
+        drawQuadCached(dsExtPositionLoc, dsExtTexCoordLoc)
 
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
     }
 
-    /**
-     * Performs downsample and upsample blur passes.
-     */
-    private fun performBlurPasses(fbs: IntArray, texs: IntArray, iterations: Int) {
-        var currentTexture = texs[0]
-        var currentWidth = lastWidth
-        var currentHeight = lastHeight
-
-        val offset = 1.0f
-
-        // Downsample passes
-        GLES20.glUseProgram(downsampleProgram)
-        for (i in 0 until iterations) {
-            val targetWidth = (currentWidth / 2).coerceAtLeast(1)
-            val targetHeight = (currentHeight / 2).coerceAtLeast(1)
-
-            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbs[i + 1])
-            GLES20.glViewport(0, 0, targetWidth, targetHeight)
-
-            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, currentTexture)
-
-            val halfPixelLoc = GLES20.glGetUniformLocation(downsampleProgram, "uHalfPixel")
-            GLES20.glUniform2f(halfPixelLoc, offset * 0.5f / currentWidth, offset * 0.5f / currentHeight)
-
-            drawQuad(downsampleProgram)
-
-            currentTexture = texs[i + 1]
-            currentWidth = targetWidth
-            currentHeight = targetHeight
-        }
-
-        // Upsample passes
-        GLES20.glUseProgram(upsampleProgram)
-        for (i in iterations - 1 downTo 0) {
-            val targetWidth = if (i == 0) lastWidth else (lastWidth shr i)
-            val targetHeight = if (i == 0) lastHeight else (lastHeight shr i)
-
-            val targetFb = if (i == 0) fbs[0] else fbs[i]
-            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, targetFb)
-            GLES20.glViewport(0, 0, targetWidth, targetHeight)
-
-            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, currentTexture)
-
-            val halfPixelLoc = GLES20.glGetUniformLocation(upsampleProgram, "uHalfPixel")
-            GLES20.glUniform2f(halfPixelLoc, offset * 0.5f / currentWidth, offset * 0.5f / currentHeight)
-
-            drawQuad(upsampleProgram)
-
-            currentTexture = texs[if (i == 0) 0 else i]
-            currentWidth = targetWidth
-            currentHeight = targetHeight
-        }
-    }
 
     /**
      * Composites the final result by sampling from pyramid levels based on gradient.
@@ -412,35 +457,19 @@ class VariableOpenGLBlur : BlurAlgorithm {
 
         GLES20.glUseProgram(compositeProgram)
 
-        // Bind pyramid textures to texture units
-        // We bind all levels 0 to maxLevel (level 0 is always the original)
         for (i in 0..maxLevel.coerceAtMost(MAX_PYRAMID_LEVELS - 1)) {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + i)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, pyramidTextures!![i])
-            val loc = GLES20.glGetUniformLocation(compositeProgram, "uLevel$i")
-            GLES20.glUniform1i(loc, i)
         }
 
-        // Set aspect ratio for radial gradient correction
-        val aspectRatioLoc = GLES20.glGetUniformLocation(compositeProgram, "uAspectRatio")
-        val aspectRatio = lastWidth.toFloat() / lastHeight.toFloat()
-        GLES20.glUniform1f(aspectRatioLoc, aspectRatio)
-
-        // Set gradient parameters
+        GLES20.glUniform1f(compAspectRatioLoc, lastWidth.toFloat() / lastHeight.toFloat())
         setGradientUniforms(gradient)
-
-        // Set level range (use float for GLSL ES 2.0 compatibility)
-        val minLevelLoc = GLES20.glGetUniformLocation(compositeProgram, "uMinLevel")
-        val maxLevelLoc = GLES20.glGetUniformLocation(compositeProgram, "uMaxLevel")
-        GLES20.glUniform1f(minLevelLoc, minLevel.toFloat())
-        GLES20.glUniform1f(maxLevelLoc, maxLevel.toFloat())
-
-        // Set overlay color uniforms
+        GLES20.glUniform1f(compMinLevelLoc, minLevel.toFloat())
+        GLES20.glUniform1f(compMaxLevelLoc, maxLevel.toFloat())
         setOverlayUniforms()
 
-        drawQuad(compositeProgram)
+        drawQuadCached(compPositionLoc, compTexCoordLoc)
 
-        // Reset to texture unit 0
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
     }
 
@@ -448,23 +477,18 @@ class VariableOpenGLBlur : BlurAlgorithm {
      * Sets overlay-related uniforms in the composite shader.
      */
     private fun setOverlayUniforms() {
-        val hasOverlayLoc = GLES20.glGetUniformLocation(compositeProgram, "uHasOverlay")
-        val overlayColorLoc = GLES20.glGetUniformLocation(compositeProgram, "uOverlayColor")
-
         val overlayColor = currentOverlayColor
         if (overlayColor != null) {
-            GLES20.glUniform1f(hasOverlayLoc, 1.0f)
-
-            // Extract RGBA components (0-1 range)
+            GLES20.glUniform1f(compHasOverlayLoc, 1.0f)
             val a = ((overlayColor shr 24) and 0xFF) / 255f
             val r = ((overlayColor shr 16) and 0xFF) / 255f
             val g = ((overlayColor shr 8) and 0xFF) / 255f
             val b = (overlayColor and 0xFF) / 255f
 
-            GLES20.glUniform4f(overlayColorLoc, r, g, b, a)
+            GLES20.glUniform4f(compOverlayColorLoc, r, g, b, a)
         } else {
-            GLES20.glUniform1f(hasOverlayLoc, 0.0f)
-            GLES20.glUniform4f(overlayColorLoc, 0f, 0f, 0f, 0f)
+            GLES20.glUniform1f(compHasOverlayLoc, 0.0f)
+            GLES20.glUniform4f(compOverlayColorLoc, 0f, 0f, 0f, 0f)
         }
     }
 
@@ -472,48 +496,37 @@ class VariableOpenGLBlur : BlurAlgorithm {
      * Sets gradient-related uniforms in the composite shader.
      */
     private fun setGradientUniforms(gradient: BlurGradient) {
-        val typeLoc = GLES20.glGetUniformLocation(compositeProgram, "uGradientType")
-        val startLoc = GLES20.glGetUniformLocation(compositeProgram, "uGradientStart")
-        val endLoc = GLES20.glGetUniformLocation(compositeProgram, "uGradientEnd")
-        val centerLoc = GLES20.glGetUniformLocation(compositeProgram, "uGradientCenter")
-        val radiusLoc = GLES20.glGetUniformLocation(compositeProgram, "uGradientRadius")
-        val startRadiusLoc = GLES20.glGetUniformLocation(compositeProgram, "uStartRadius")
-        val endRadiusLoc = GLES20.glGetUniformLocation(compositeProgram, "uEndRadius")
-        val stopCountLoc = GLES20.glGetUniformLocation(compositeProgram, "uStopCount")
-
         when (gradient) {
             is BlurGradient.Linear -> {
-                GLES20.glUniform1f(typeLoc, GRADIENT_TYPE_LINEAR.toFloat())
-                GLES20.glUniform2f(startLoc, gradient.start.x, gradient.start.y)
-                GLES20.glUniform2f(endLoc, gradient.end.x, gradient.end.y)
-                GLES20.glUniform1f(startRadiusLoc, gradient.startRadius)
-                GLES20.glUniform1f(endRadiusLoc, gradient.endRadius)
-                GLES20.glUniform1f(stopCountLoc, 0f) // No custom stops
+                GLES20.glUniform1f(compGradientTypeLoc, GRADIENT_TYPE_LINEAR.toFloat())
+                GLES20.glUniform2f(compGradientStartLoc, gradient.start.x, gradient.start.y)
+                GLES20.glUniform2f(compGradientEndLoc, gradient.end.x, gradient.end.y)
+                GLES20.glUniform1f(compStartRadiusLoc, gradient.startRadius)
+                GLES20.glUniform1f(compEndRadiusLoc, gradient.endRadius)
+                GLES20.glUniform1f(compStopCountLoc, 0f)
             }
             is BlurGradient.LinearWithStops -> {
-                GLES20.glUniform1f(typeLoc, GRADIENT_TYPE_LINEAR.toFloat())
-                GLES20.glUniform2f(startLoc, gradient.start.x, gradient.start.y)
-                GLES20.glUniform2f(endLoc, gradient.end.x, gradient.end.y)
-                GLES20.glUniform1f(startRadiusLoc, gradient.stops.first().second)
-                GLES20.glUniform1f(endRadiusLoc, gradient.stops.last().second)
-                // Pass stops data
+                GLES20.glUniform1f(compGradientTypeLoc, GRADIENT_TYPE_LINEAR.toFloat())
+                GLES20.glUniform2f(compGradientStartLoc, gradient.start.x, gradient.start.y)
+                GLES20.glUniform2f(compGradientEndLoc, gradient.end.x, gradient.end.y)
+                GLES20.glUniform1f(compStartRadiusLoc, gradient.stops.first().second)
+                GLES20.glUniform1f(compEndRadiusLoc, gradient.stops.last().second)
                 setStopsUniforms(gradient.stops)
             }
             is BlurGradient.Radial -> {
-                GLES20.glUniform1f(typeLoc, GRADIENT_TYPE_RADIAL.toFloat())
-                GLES20.glUniform2f(centerLoc, gradient.center.x, gradient.center.y)
-                GLES20.glUniform1f(radiusLoc, gradient.radius)
-                GLES20.glUniform1f(startRadiusLoc, gradient.centerRadius)
-                GLES20.glUniform1f(endRadiusLoc, gradient.edgeRadius)
-                GLES20.glUniform1f(stopCountLoc, 0f) // No custom stops
+                GLES20.glUniform1f(compGradientTypeLoc, GRADIENT_TYPE_RADIAL.toFloat())
+                GLES20.glUniform2f(compGradientCenterLoc, gradient.center.x, gradient.center.y)
+                GLES20.glUniform1f(compGradientRadiusLoc, gradient.radius)
+                GLES20.glUniform1f(compStartRadiusLoc, gradient.centerRadius)
+                GLES20.glUniform1f(compEndRadiusLoc, gradient.edgeRadius)
+                GLES20.glUniform1f(compStopCountLoc, 0f)
             }
             is BlurGradient.RadialWithStops -> {
-                GLES20.glUniform1f(typeLoc, GRADIENT_TYPE_RADIAL.toFloat())
-                GLES20.glUniform2f(centerLoc, gradient.center.x, gradient.center.y)
-                GLES20.glUniform1f(radiusLoc, gradient.radius)
-                GLES20.glUniform1f(startRadiusLoc, gradient.stops.first().second)
-                GLES20.glUniform1f(endRadiusLoc, gradient.stops.last().second)
-                // Pass stops data
+                GLES20.glUniform1f(compGradientTypeLoc, GRADIENT_TYPE_RADIAL.toFloat())
+                GLES20.glUniform2f(compGradientCenterLoc, gradient.center.x, gradient.center.y)
+                GLES20.glUniform1f(compGradientRadiusLoc, gradient.radius)
+                GLES20.glUniform1f(compStartRadiusLoc, gradient.stops.first().second)
+                GLES20.glUniform1f(compEndRadiusLoc, gradient.stops.last().second)
                 setStopsUniforms(gradient.stops)
             }
         }
@@ -524,29 +537,17 @@ class VariableOpenGLBlur : BlurAlgorithm {
      * Supports up to 8 stops (MAX_STOPS).
      */
     private fun setStopsUniforms(stops: List<Pair<Float, Float>>) {
-        val stopCountLoc = GLES20.glGetUniformLocation(compositeProgram, "uStopCount")
+        val sorted = sortedStops ?: stops.sortedBy { it.first }.take(MAX_STOPS)
+        GLES20.glUniform1f(compStopCountLoc, sorted.size.toFloat())
 
-        // Sort stops by position and limit to MAX_STOPS
-        val sortedStops = stops.sortedBy { it.first }.take(MAX_STOPS)
-        val count = sortedStops.size
-
-        GLES20.glUniform1f(stopCountLoc, count.toFloat())
-
-        // Set positions array
-        val positions = FloatArray(MAX_STOPS) { 0f }
-        val radii = FloatArray(MAX_STOPS) { 0f }
-
-        sortedStops.forEachIndexed { index, (position, radius) ->
-            positions[index] = position
-            radii[index] = radius
-        }
-
-        // Set uniform arrays - OpenGL ES 2.0 requires setting each element individually
         for (i in 0 until MAX_STOPS) {
-            val posLoc = GLES20.glGetUniformLocation(compositeProgram, "uStopPositions[$i]")
-            val radLoc = GLES20.glGetUniformLocation(compositeProgram, "uStopRadii[$i]")
-            GLES20.glUniform1f(posLoc, positions[i])
-            GLES20.glUniform1f(radLoc, radii[i])
+            if (i < sorted.size) {
+                GLES20.glUniform1f(compStopPositionLocs[i], sorted[i].first)
+                GLES20.glUniform1f(compStopRadiiLocs[i], sorted[i].second)
+            } else {
+                GLES20.glUniform1f(compStopPositionLocs[i], 0f)
+                GLES20.glUniform1f(compStopRadiiLocs[i], 0f)
+            }
         }
     }
 
@@ -595,17 +596,9 @@ class VariableOpenGLBlur : BlurAlgorithm {
         currentEglImage = null
     }
 
-    fun hasEglImageSupport(): Boolean {
-        if (!isInitialized) return false
-        val extensions = GLES20.glGetString(GLES20.GL_EXTENSIONS) ?: return false
-        return extensions.contains("GL_OES_EGL_image")
-    }
+    fun hasEglImageSupport(): Boolean = isInitialized && hasEglImage
 
-    fun hasExternalOesSupport(): Boolean {
-        if (!isInitialized) return false
-        val extensions = GLES20.glGetString(GLES20.GL_EXTENSIONS) ?: return false
-        return extensions.contains("GL_OES_EGL_image_external")
-    }
+    fun hasExternalOesSupport(): Boolean = isInitialized && hasExternalOes
 
     fun getExternalInputTextureId(): Int {
         if (externalInputTexture != 0) return externalInputTexture
@@ -715,7 +708,84 @@ class VariableOpenGLBlur : BlurAlgorithm {
         // External OES downsample shader — allow failure if extension not supported
         downsampleExternalProgram = createProgram(VERTEX_SHADER, DOWNSAMPLE_EXTERNAL_FRAGMENT_SHADER)
 
+        cacheUniformLocations()
+        setConstantUniforms()
+        cacheExtensionSupport()
         return true
+    }
+
+    private fun setConstantUniforms() {
+        // Sampler bindings to texture unit 0 never change.
+        GLES20.glUseProgram(downsampleProgram)
+        GLES20.glUniform1i(dsTextureLoc, 0)
+        GLES20.glUseProgram(upsampleProgram)
+        GLES20.glUniform1i(usTextureLoc, 0)
+        GLES20.glUseProgram(blitProgram)
+        GLES20.glUniform1i(blitTextureLoc, 0)
+        // Composite level samplers: uLevel0=0, uLevel1=1, ...
+        GLES20.glUseProgram(compositeProgram)
+        for (i in 0 until MAX_PYRAMID_LEVELS) {
+            GLES20.glUniform1i(compLevelLocs[i], i)
+        }
+        GLES20.glUseProgram(0)
+    }
+
+    private fun cacheExtensionSupport() {
+        val extensions = GLES20.glGetString(GLES20.GL_EXTENSIONS) ?: ""
+        hasEglImage = extensions.contains("GL_OES_EGL_image")
+        hasExternalOes = extensions.contains("GL_OES_EGL_image_external")
+    }
+
+    private fun cacheUniformLocations() {
+        // Downsample program
+        dsHalfPixelLoc = GLES20.glGetUniformLocation(downsampleProgram, "uHalfPixel")
+        dsPositionLoc = GLES20.glGetAttribLocation(downsampleProgram, "aPosition")
+        dsTexCoordLoc = GLES20.glGetAttribLocation(downsampleProgram, "aTexCoord")
+        dsTextureLoc = GLES20.glGetUniformLocation(downsampleProgram, "uTexture")
+
+        // Upsample program
+        usHalfPixelLoc = GLES20.glGetUniformLocation(upsampleProgram, "uHalfPixel")
+        usPositionLoc = GLES20.glGetAttribLocation(upsampleProgram, "aPosition")
+        usTexCoordLoc = GLES20.glGetAttribLocation(upsampleProgram, "aTexCoord")
+        usTextureLoc = GLES20.glGetUniformLocation(upsampleProgram, "uTexture")
+
+        // Blit program
+        blitPositionLoc = GLES20.glGetAttribLocation(blitProgram, "aPosition")
+        blitTexCoordLoc = GLES20.glGetAttribLocation(blitProgram, "aTexCoord")
+        blitTextureLoc = GLES20.glGetUniformLocation(blitProgram, "uTexture")
+
+        // External OES program
+        if (downsampleExternalProgram != 0) {
+            dsExtTextureLoc = GLES20.glGetUniformLocation(downsampleExternalProgram, "uTexture")
+            dsExtHalfPixelLoc = GLES20.glGetUniformLocation(downsampleExternalProgram, "uHalfPixel")
+            dsExtPositionLoc = GLES20.glGetAttribLocation(downsampleExternalProgram, "aPosition")
+            dsExtTexCoordLoc = GLES20.glGetAttribLocation(downsampleExternalProgram, "aTexCoord")
+        }
+
+        // Composite program
+        compPositionLoc = GLES20.glGetAttribLocation(compositeProgram, "aPosition")
+        compTexCoordLoc = GLES20.glGetAttribLocation(compositeProgram, "aTexCoord")
+
+        for (i in 0 until MAX_PYRAMID_LEVELS) {
+            compLevelLocs[i] = GLES20.glGetUniformLocation(compositeProgram, "uLevel$i")
+        }
+        compAspectRatioLoc = GLES20.glGetUniformLocation(compositeProgram, "uAspectRatio")
+        compMinLevelLoc = GLES20.glGetUniformLocation(compositeProgram, "uMinLevel")
+        compMaxLevelLoc = GLES20.glGetUniformLocation(compositeProgram, "uMaxLevel")
+        compHasOverlayLoc = GLES20.glGetUniformLocation(compositeProgram, "uHasOverlay")
+        compOverlayColorLoc = GLES20.glGetUniformLocation(compositeProgram, "uOverlayColor")
+        compGradientTypeLoc = GLES20.glGetUniformLocation(compositeProgram, "uGradientType")
+        compGradientStartLoc = GLES20.glGetUniformLocation(compositeProgram, "uGradientStart")
+        compGradientEndLoc = GLES20.glGetUniformLocation(compositeProgram, "uGradientEnd")
+        compGradientCenterLoc = GLES20.glGetUniformLocation(compositeProgram, "uGradientCenter")
+        compGradientRadiusLoc = GLES20.glGetUniformLocation(compositeProgram, "uGradientRadius")
+        compStartRadiusLoc = GLES20.glGetUniformLocation(compositeProgram, "uStartRadius")
+        compEndRadiusLoc = GLES20.glGetUniformLocation(compositeProgram, "uEndRadius")
+        compStopCountLoc = GLES20.glGetUniformLocation(compositeProgram, "uStopCount")
+        for (i in 0 until MAX_STOPS) {
+            compStopPositionLocs[i] = GLES20.glGetUniformLocation(compositeProgram, "uStopPositions[$i]")
+            compStopRadiiLocs[i] = GLES20.glGetUniformLocation(compositeProgram, "uStopRadii[$i]")
+        }
     }
 
     private fun createProgram(vertexSource: String, fragmentSource: String): Int {
@@ -851,13 +921,7 @@ class VariableOpenGLBlur : BlurAlgorithm {
         return true
     }
 
-    private fun drawQuad(program: Int, flipY: Boolean = false) {
-        val positionLoc = GLES20.glGetAttribLocation(program, "aPosition")
-        val texCoordLoc = GLES20.glGetAttribLocation(program, "aTexCoord")
-        val textureLoc = GLES20.glGetUniformLocation(program, "uTexture")
-
-        GLES20.glUniform1i(textureLoc, 0)
-
+    private fun drawQuadCached(positionLoc: Int, texCoordLoc: Int, flipY: Boolean = false) {
         GLES20.glEnableVertexAttribArray(positionLoc)
         GLES20.glVertexAttribPointer(positionLoc, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
 
@@ -1177,13 +1241,15 @@ class VariableOpenGLBlur : BlurAlgorithm {
                 return uStopRadii[0];
             }
 
-            // Sample from pyramid level using float comparison for GLSL ES 2.0 compatibility
+            // Sample from pyramid level.
+            // Branchless: fetches all 6 levels then selects via math.
+            // On modern GPUs (Mali-G715, Adreno 7xx) the extra fetches are
+            // nearly free due to texture cache. On older GPUs (Mali-G72)
+            // branching with texture fetches causes thread divergence that
+            // is MORE expensive than redundant fetches.
             vec4 sampleAtLevel(float level) {
-                // Clamp level to valid range
                 float l = clamp(level, 0.0, 5.0);
 
-                // Sample all levels and blend based on level value
-                // This approach avoids dynamic branching on level parameter
                 vec4 c0 = texture2D(uLevel0, vTexCoord);
                 vec4 c1 = texture2D(uLevel1, vTexCoord);
                 vec4 c2 = texture2D(uLevel2, vTexCoord);
@@ -1191,27 +1257,20 @@ class VariableOpenGLBlur : BlurAlgorithm {
                 vec4 c4 = texture2D(uLevel4, vTexCoord);
                 vec4 c5 = texture2D(uLevel5, vTexCoord);
 
-                // Interpolate between adjacent levels based on fractional level
                 float levelFloor = floor(l);
                 float levelFrac = l - levelFloor;
 
-                // Select colors based on level
                 vec4 colorLow, colorHigh;
                 if (levelFloor < 0.5) {
-                    colorLow = c0;
-                    colorHigh = c1;
+                    colorLow = c0; colorHigh = c1;
                 } else if (levelFloor < 1.5) {
-                    colorLow = c1;
-                    colorHigh = c2;
+                    colorLow = c1; colorHigh = c2;
                 } else if (levelFloor < 2.5) {
-                    colorLow = c2;
-                    colorHigh = c3;
+                    colorLow = c2; colorHigh = c3;
                 } else if (levelFloor < 3.5) {
-                    colorLow = c3;
-                    colorHigh = c4;
+                    colorLow = c3; colorHigh = c4;
                 } else {
-                    colorLow = c4;
-                    colorHigh = c5;
+                    colorLow = c4; colorHigh = c5;
                 }
 
                 return mix(colorLow, colorHigh, levelFrac);
