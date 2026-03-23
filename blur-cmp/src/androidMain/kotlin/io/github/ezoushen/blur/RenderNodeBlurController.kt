@@ -106,6 +106,9 @@ class RenderNodeBlurController {
         if (view.width == 0 || view.height == 0) return false
         if (!isDirty) return false
 
+        val perf = BlurPerfMonitor.enabled
+        val t0 = if (perf) System.nanoTime() else 0L
+
         // Calculate offsets
         source.getLocationOnScreen(sourceLocation)
         view.getLocationOnScreen(blurViewLocation)
@@ -196,6 +199,10 @@ class RenderNodeBlurController {
         }
 
         isDirty = false
+        if (perf) {
+            val totalUs = (System.nanoTime() - t0) / 1000
+            BlurPerfMonitor.report(totalUs, 0, totalUs, "RENDER_EFFECT", "${view.width}x${view.height}")
+        }
         return true
     }
 

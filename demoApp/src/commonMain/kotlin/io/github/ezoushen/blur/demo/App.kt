@@ -232,17 +232,20 @@ private fun UniformBlurDemo(
     var tintAlpha by remember { mutableStateOf(0.15f) }
     var blendModeOption by remember { mutableStateOf(BlurBlendModeOption.ColorDodge) }
     var isEnabled by remember { mutableStateOf(true) }
+    var isLive by remember { mutableStateOf(true) }
 
     val state = rememberBlurOverlayState(
         initialConfig = BlurOverlayConfig(
             radius = radius,
             tintBlendMode = blendModeOption.blendMode,
+            isLive = isLive,
         ).withTint(Color.White.copy(alpha = tintAlpha)),
     )
 
     state.config = BlurOverlayConfig(
         radius = radius,
         tintBlendMode = blendModeOption.blendMode,
+        isLive = isLive,
     ).withTint(Color.White.copy(alpha = tintAlpha))
     state.isEnabled = isEnabled
 
@@ -293,6 +296,7 @@ private fun UniformBlurDemo(
                     }
                     Spacer(Modifier.height(8.dp))
                     ToggleRow("Blur Enabled", isEnabled) { isEnabled = it }
+                    ToggleRow("isLive", isLive) { isLive = it }
                     Spacer(Modifier.height(16.dp))
                 }
             }
@@ -319,6 +323,7 @@ private fun VariableBlurDemo(
     var radius by remember { mutableStateOf(30f) }
     var gradientStyle by remember { mutableStateOf(GradientStyle.TopToBottom) }
     var spotlightRadius by remember { mutableStateOf(0.4f) }
+    var isLive by remember { mutableStateOf(true) }
 
     val gradient = when (gradientStyle) {
         GradientStyle.TopToBottom -> BlurGradientType.Linear(
@@ -345,10 +350,10 @@ private fun VariableBlurDemo(
     }
 
     val state = rememberBlurOverlayState(
-        initialConfig = BlurOverlayConfig(radius = radius, gradient = gradient),
+        initialConfig = BlurOverlayConfig(radius = radius, gradient = gradient, isLive = isLive),
     )
 
-    state.config = BlurOverlayConfig(radius = radius, gradient = gradient)
+    state.config = BlurOverlayConfig(radius = radius, gradient = gradient, isLive = isLive)
 
     Box(modifier = Modifier.fillMaxSize()) {
         AnimatedBackground(modifier = Modifier.fillMaxSize())
@@ -392,6 +397,7 @@ private fun VariableBlurDemo(
                     if (gradientStyle == GradientStyle.Spotlight) {
                         LabeledSlider("Spotlight Radius", spotlightRadius, { spotlightRadius = it }, 0.1f..1f)
                     }
+                    ToggleRow("isLive", isLive) { isLive = it }
                     Spacer(Modifier.height(16.dp))
                 }
             }
@@ -409,6 +415,7 @@ private fun ColorDodgeDemo(
     var radius by remember { mutableStateOf(20f) }
     var tintAlpha by remember { mutableStateOf(0.2f) }
     var useDodge by remember { mutableStateOf(true) }
+    var isLive by remember { mutableStateOf(true) }
 
     val blendMode = if (useDodge) BlurBlendMode.ColorDodge else BlurBlendMode.Normal
 
@@ -416,12 +423,14 @@ private fun ColorDodgeDemo(
         initialConfig = BlurOverlayConfig(
             radius = radius,
             tintBlendMode = blendMode,
+            isLive = isLive,
         ).withTint(Color.White.copy(alpha = tintAlpha)),
     )
 
     state.config = BlurOverlayConfig(
         radius = radius,
         tintBlendMode = blendMode,
+        isLive = isLive,
     ).withTint(Color.White.copy(alpha = tintAlpha))
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -481,6 +490,7 @@ private fun ColorDodgeDemo(
                     LabeledSlider("Radius", radius, { radius = it }, 0f..80f)
                     LabeledSlider("Tint Alpha", tintAlpha, { tintAlpha = it }, 0f..1f)
                     ToggleRow("Normal <-> ColorDodge", useDodge) { useDodge = it }
+                    ToggleRow("isLive", isLive) { isLive = it }
                     Spacer(Modifier.height(16.dp))
                 }
             }
