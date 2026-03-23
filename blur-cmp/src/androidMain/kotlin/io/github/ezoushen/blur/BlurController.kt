@@ -13,7 +13,6 @@ import io.github.ezoushen.blur.algorithm.BlurAlgorithmFactory
 import io.github.ezoushen.blur.algorithm.OpenGLBlur
 import io.github.ezoushen.blur.capture.ContentCapture
 import io.github.ezoushen.blur.capture.DecorViewCapture
-import io.github.ezoushen.blur.capture.HardwareBufferCapture
 import io.github.ezoushen.blur.capture.SurfaceTextureCapture
 import io.github.ezoushen.blur.util.BitmapPool
 
@@ -55,10 +54,7 @@ class BlurController(
 
     private val bitmapPool = BitmapPool(maxPoolSize = 4)
     private val algorithm: BlurAlgorithm = BlurAlgorithmFactory.create(context)
-    // API 29+: RenderNode capture (RecordingCanvas, ~0ms) instead of software canvas (2-5ms)
-    private val capture: ContentCapture =
-        if (HardwareBufferCapture.isAvailable()) HardwareBufferCapture()
-        else DecorViewCapture()
+    private val capture: ContentCapture = DecorViewCapture()
 
     // SurfaceTexture capture for zero-copy API 26-28 path
     private var surfaceTextureCapture: SurfaceTextureCapture? = null
@@ -129,33 +125,16 @@ class BlurController(
      * Use this in the blur view's draw() method to prevent infinite recursion.
      */
     fun isCapturing(): Boolean {
-        return when (capture) {
-            is HardwareBufferCapture -> capture.isCurrentlyCapturing()
-            is DecorViewCapture -> capture.isCurrentlyCapturing()
-            else -> false
-        }
+        return (capture as? DecorViewCapture)?.isCurrentlyCapturing() == true
     }
 
-    /**
-     * Register a view to exclude from capture. The view is hidden during capture
-     * to prevent its content from appearing in the blurred bitmap.
-     */
     fun addExcludedView(view: View) {
-        when (capture) {
-            is HardwareBufferCapture -> capture.addExcludedView(view)
-            is DecorViewCapture -> capture.addExcludedView(view)
-        }
+        (capture as? DecorViewCapture)?.addExcludedView(view)
         surfaceTextureCapture?.addExcludedView(view)
     }
 
-    /**
-     * Unregister a previously excluded view.
-     */
     fun removeExcludedView(view: View) {
-        when (capture) {
-            is HardwareBufferCapture -> capture.removeExcludedView(view)
-            is DecorViewCapture -> capture.removeExcludedView(view)
-        }
+        (capture as? DecorViewCapture)?.removeExcludedView(view)
         surfaceTextureCapture?.removeExcludedView(view)
     }
 
@@ -233,15 +212,15 @@ class BlurController(
 
         val strategy = resolveStrategy()
 
-        val t0 = System.nanoTime()
+        val t0 = if (BlurPerfMonitor.enabled) System.nanoTime() else 0L
         val success = when (strategy) {
-            BlurPipelineStrategy.EGL_IMAGE -> updateEglImage(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
             BlurPipelineStrategy.SURFACE_TEXTURE -> updateSurfaceTexture(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
             else -> updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
         }
-        val t1 = System.nanoTime()
-        val totalUs = (t1 - t0) / 1000
-        BlurPerfMonitor.report(0, totalUs, totalUs, strategy.name, "${scaledWidth}x${scaledHeight}")
+        if (BlurPerfMonitor.enabled) {
+            val totalUs = (System.nanoTime() - t0) / 1000
+            BlurPerfMonitor.report(0, totalUs, totalUs, strategy.name, "${scaledWidth}x${scaledHeight}")
+        }
 
         if (!success) return false
 
@@ -282,48 +261,6 @@ class BlurController(
         return true
     }
 
-    /**
-     * EGL_IMAGE path (API 29+): HardwareBuffer -> EGLImage -> GL_TEXTURE_2D. Zero CPU-GPU crossings.
-     */
-    private fun updateEglImage(
-        view: View, source: View,
-        scaledWidth: Int, scaledHeight: Int,
-        scaledRadius: Float, effectiveDownsample: Float
-    ): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
-
-        val hwCapture = capture as? HardwareBufferCapture
-            ?: return updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
-        val glBlur = algorithm as? OpenGLBlur
-            ?: return updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
-
-        val image = hwCapture.captureToHardwareBuffer(view, source, scaledWidth, scaledHeight, effectiveDownsample)
-            ?: return updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
-
-        try {
-            val hwBuffer = image.hardwareBuffer
-                ?: return updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
-
-            try {
-                if (!glBlur.setInputFromHardwareBuffer(hwBuffer)) {
-                    return updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
-                }
-            } finally {
-                hwBuffer.close()
-            }
-        } finally {
-            image.close()
-        }
-
-        // Blur with zero-copy input (inputTexture is already set)
-        // Pass a dummy bitmap — the blur method will use inputTexture instead of texImage2D
-        val dummyBitmap = captureBitmap ?: run {
-            captureBitmap = bitmapPool.acquire(scaledWidth, scaledHeight)
-            captureBitmap ?: return false
-        }
-        blurredBitmap = algorithm.blur(dummyBitmap, scaledRadius)
-        return true
-    }
 
     /**
      * SURFACE_TEXTURE path (API 26+): Surface.lockHardwareCanvas -> SurfaceTexture -> GL_TEXTURE_EXTERNAL_OES.
