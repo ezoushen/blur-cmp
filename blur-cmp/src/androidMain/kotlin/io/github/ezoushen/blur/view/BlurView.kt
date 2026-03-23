@@ -65,6 +65,7 @@ class BlurView @JvmOverloads constructor(
 
     // For tracking rendering state to prevent infinite recursion
     private var isRendering = false
+    private var hasFirstFrame = false
     private var blurTextureView: TextureView? = null
     private var blurSurface: Surface? = null
 
@@ -89,21 +90,28 @@ class BlurView @JvmOverloads constructor(
     }
 
     private val preDrawListener = ViewTreeObserver.OnPreDrawListener {
-        if (isBlurEnabled && isLive && isShown) {
+        if (isBlurEnabled) {
+            val needsFirstFrame = !hasFirstFrame
             if (useRenderNode) {
                 val controller = renderNodeController
-                if (controller != null) {
-                    controller.invalidate()
+                if (controller != null && (needsFirstFrame || (isLive && isShown))) {
                     if (controller.update()) {
+                        hasFirstFrame = true
                         invalidate()
                     }
                 }
             } else {
                 val controller = blurController
                 if (controller != null) {
-                    controller.invalidate()
-                    if (controller.update()) {
-                        invalidate()
+                    val hasPendingWork = controller.hasPendingDirty()
+                    if (needsFirstFrame || hasPendingWork || (isLive && isShown)) {
+                        if (isLive) {
+                            controller.markContentDirty()
+                        }
+                        if (controller.update()) {
+                            hasFirstFrame = true
+                            invalidate()
+                        }
                     }
                 }
             }
@@ -193,10 +201,8 @@ class BlurView @JvmOverloads constructor(
         blurConfig = config
         if (useRenderNode) {
             renderNodeController?.setConfig(config)
-            renderNodeController?.invalidate()
         } else {
             blurController?.setConfig(config)
-            blurController?.invalidate()
         }
         invalidate()
     }
@@ -217,10 +223,8 @@ class BlurView @JvmOverloads constructor(
         blurConfig = blurConfig.copy(radius = radius.coerceIn(0f, 25f))
         if (useRenderNode) {
             renderNodeController?.setConfig(blurConfig)
-            renderNodeController?.invalidate()
         } else {
             blurController?.setConfig(blurConfig)
-            blurController?.invalidate()
         }
         invalidate()
     }
@@ -235,10 +239,8 @@ class BlurView @JvmOverloads constructor(
         blurConfig = blurConfig.copy(overlayColor = color?.takeIf { it != Color.TRANSPARENT })
         if (useRenderNode) {
             renderNodeController?.setConfig(blurConfig)
-            renderNodeController?.invalidate()
         } else {
             blurController?.setConfig(blurConfig)
-            blurController?.invalidate()
         }
         invalidate()
     }
@@ -252,10 +254,8 @@ class BlurView @JvmOverloads constructor(
         blurConfig = blurConfig.copy(downsampleFactor = factor.coerceIn(1f, 16f))
         if (useRenderNode) {
             renderNodeController?.setConfig(blurConfig)
-            renderNodeController?.invalidate()
         } else {
             blurController?.setConfig(blurConfig)
-            blurController?.invalidate()
         }
         invalidate()
     }
@@ -292,12 +292,8 @@ class BlurView @JvmOverloads constructor(
         if (isLive != live) {
             isLive = live
             if (live) {
-                // Trigger an update when going live
-                if (useRenderNode) {
-                    renderNodeController?.invalidate()
-                } else {
-                    blurController?.invalidate()
-                }
+                blurController?.markContentDirty()
+                renderNodeController?.invalidate()
                 invalidate()
             }
         }
@@ -418,6 +414,7 @@ class BlurView @JvmOverloads constructor(
 
     override fun onDetachedFromWindow() {
         decorView?.viewTreeObserver?.removeOnPreDrawListener(preDrawListener)
+        hasFirstFrame = false
 
         blurController?.setOutputSurface(null)
         blurSurface?.release()
@@ -437,7 +434,7 @@ class BlurView @JvmOverloads constructor(
         if (useRenderNode) {
             renderNodeController?.invalidate()
         } else {
-            blurController?.invalidate()
+            blurController?.markContentDirty()
         }
     }
 
