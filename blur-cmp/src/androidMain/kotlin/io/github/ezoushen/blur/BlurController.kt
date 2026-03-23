@@ -233,12 +233,15 @@ class BlurController(
 
         val strategy = resolveStrategy()
 
-        // Dispatch to the appropriate capture+blur path
+        val t0 = System.nanoTime()
         val success = when (strategy) {
             BlurPipelineStrategy.EGL_IMAGE -> updateEglImage(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
             BlurPipelineStrategy.SURFACE_TEXTURE -> updateSurfaceTexture(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
             else -> updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
         }
+        val t1 = System.nanoTime()
+        val totalUs = (t1 - t0) / 1000
+        BlurPerfMonitor.report(0, totalUs, totalUs, strategy.name, "${scaledWidth}x${scaledHeight}")
 
         if (!success) return false
 

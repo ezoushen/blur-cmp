@@ -239,18 +239,22 @@ class VariableBlurController(
         // Scale the gradient's max radius for downsample-independent appearance
         val scaledMaxRadius = currentGradient.maxRadius * (BASELINE_DOWNSAMPLE / effectiveDownsample)
 
-        // Prepare blur algorithm (needed for GL extension queries in resolveStrategy)
+        val t0 = System.nanoTime()
         if (!algorithm.prepare(context, scaledWidth, scaledHeight, scaledMaxRadius)) {
             return false
         }
+        val t1 = System.nanoTime()
 
         val strategy = resolveStrategy()
-
         val success = when (strategy) {
             BlurPipelineStrategy.EGL_IMAGE -> updateEglImage(view, source, scaledWidth, scaledHeight, scaledMaxRadius, effectiveDownsample)
             BlurPipelineStrategy.SURFACE_TEXTURE -> updateSurfaceTexture(view, source, scaledWidth, scaledHeight, scaledMaxRadius, effectiveDownsample)
             else -> updateLegacy(view, source, scaledWidth, scaledHeight, scaledMaxRadius, effectiveDownsample)
         }
+        val t2 = System.nanoTime()
+        val totalUs = (t2 - t0) / 1000
+        android.util.Log.i("BlurPerf", "VarCtrl dim=${scaledWidth}x${scaledHeight} strategy=$strategy prepare=${(t1-t0)/1000}us pipeline=${(t2-t1)/1000}us total=${totalUs}us")
+        BlurPerfMonitor.report(0, (t2 - t1) / 1000, totalUs, strategy.name, "${scaledWidth}x${scaledHeight}")
 
         if (!success) return false
 
@@ -280,13 +284,18 @@ class VariableBlurController(
         val captureOutput = captureBitmap ?: return false
         captureOutput.eraseColor(Color.TRANSPARENT)
 
+        val tc0 = System.nanoTime()
         if (!capture.capture(view, source, captureOutput, effectiveDownsample)) {
             return false
         }
+        val tc1 = System.nanoTime()
 
         applyPreBlurTint(captureOutput)
 
+        val tb0 = System.nanoTime()
         blurredBitmap = algorithm.blur(captureOutput, scaledMaxRadius)
+        val tb1 = System.nanoTime()
+        android.util.Log.i("BlurPerf", "  Legacy capture=${(tc1-tc0)/1000}us blur=${(tb1-tb0)/1000}us captureType=${capture::class.simpleName}")
         return true
     }
 

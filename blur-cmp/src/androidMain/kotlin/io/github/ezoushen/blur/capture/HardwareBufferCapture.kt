@@ -127,10 +127,12 @@ class HardwareBufferCapture : ContentCapture {
             }
 
             // Rasterize on GPU via HardwareRenderer → ImageReader
+            val ts0 = System.nanoTime()
             renderer.setContentRoot(node)
             val syncResult = renderer.createRenderRequest()
                 .setWaitForPresent(true)
                 .syncAndDraw()
+            val ts1 = System.nanoTime()
 
             if (syncResult != HardwareRenderer.SYNC_OK &&
                 syncResult != HardwareRenderer.SYNC_REDRAW_REQUESTED) {
@@ -149,6 +151,7 @@ class HardwareBufferCapture : ContentCapture {
 
                     // Hardware Bitmap cannot be drawn to a software Canvas.
                     // Copy pixels via intermediate mutable bitmap.
+                    val tc0 = System.nanoTime()
                     val mutableCopy = hardwareBitmap.copy(Bitmap.Config.ARGB_8888, true)
                         ?: return false
                     try {
@@ -157,6 +160,8 @@ class HardwareBufferCapture : ContentCapture {
                     } finally {
                         mutableCopy.recycle()
                     }
+                    val tc1 = System.nanoTime()
+                    android.util.Log.i("BlurPerf", "    HWCapture sync=${(ts1-ts0)/1000}us copy=${(tc1-tc0)/1000}us")
                     return true
                 } finally {
                     hardwareBuffer.close()
