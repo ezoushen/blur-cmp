@@ -11,6 +11,9 @@
         <!-- Overlay color with alpha (e.g., #80FFFFFF for semi-transparent white) -->
         <attr name="blurOverlayColor" format="color" />
 
+        <!-- Tint color with alpha (preferred over blurOverlayColor) -->
+        <attr name="blurTintColor" format="color" />
+
         <!-- Whether blur is enabled (default true) -->
         <attr name="blurEnabled" format="boolean" />
 
@@ -48,6 +51,9 @@
 
         <!-- Overlay color with alpha -->
         <attr name="blurOverlayColor" />
+
+        <!-- Tint color with alpha (preferred over blurOverlayColor) -->
+        <attr name="blurTintColor" />
 
         <!-- Whether blur is enabled (default true) -->
         <attr name="blurEnabled" />

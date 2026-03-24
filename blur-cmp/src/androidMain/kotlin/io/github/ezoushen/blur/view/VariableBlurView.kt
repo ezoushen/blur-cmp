@@ -37,7 +37,7 @@ import io.github.ezoushen.blur.capture.DecorViewCapture
  *     app:gradientType="radial"
  *     app:startRadius="0"
  *     app:endRadius="30"
- *     app:blurOverlayColor="#40FFFFFF" />
+ *     app:blurTintColor="#40FFFFFF" />
  * ```
  *
  * Or programmatically:
@@ -183,11 +183,15 @@ class VariableBlurView @JvmOverloads constructor(
                 4f
             )
 
-            // Parse overlay color
-            val overlayColor = typedArray.getColor(
-                R.styleable.VariableBlurView_blurOverlayColor,
+            // Parse tint color (prefer blurTintColor, fall back to blurOverlayColor)
+            val tintColor = typedArray.getColor(
+                R.styleable.VariableBlurView_blurTintColor,
                 Color.TRANSPARENT
             ).takeIf { it != Color.TRANSPARENT }
+                ?: typedArray.getColor(
+                    R.styleable.VariableBlurView_blurOverlayColor,
+                    Color.TRANSPARENT
+                ).takeIf { it != Color.TRANSPARENT }
 
             // Parse enabled state
             isBlurEnabled = typedArray.getBoolean(
@@ -216,7 +220,7 @@ class VariableBlurView @JvmOverloads constructor(
             // Apply config
             blurConfig = BlurConfig(
                 radius = endRadius, // Use max radius for config
-                tintColor = overlayColor,
+                tintColor = tintColor,
                 downsampleFactor = downsample
             )
         } finally {
@@ -257,12 +261,12 @@ class VariableBlurView @JvmOverloads constructor(
     fun getBlurConfig(): BlurConfig = blurConfig
 
     /**
-     * Sets the overlay color with alpha.
+     * Sets the tint color with alpha.
      *
-     * @param color The overlay color including alpha (e.g., 0x80FFFFFF).
-     *              Use Color.TRANSPARENT or null for no overlay.
+     * @param color The tint color including alpha (e.g., 0x80FFFFFF).
+     *              Use Color.TRANSPARENT or null for no tint.
      */
-    fun setOverlayColor(color: Int?) {
+    fun setTintColor(color: Int?) {
         blurConfig = blurConfig.copy(tintColor = color?.takeIf { it != Color.TRANSPARENT })
         blurController?.setConfig(blurConfig)
         invalidate()

@@ -34,13 +34,13 @@ import io.github.ezoushen.blur.capture.DecorViewCapture
  *     android:layout_width="match_parent"
  *     android:layout_height="wrap_content"
  *     app:blurRadius="16dp"
- *     app:blurOverlayColor="#80FFFFFF" />
+ *     app:blurTintColor="#80FFFFFF" />
  * ```
  *
  * Or programmatically:
  * ```kotlin
  * val blurView = BlurView(context).apply {
- *     setBlurConfig(BlurConfig(radius = 16f, overlayColor = 0x80FFFFFF.toInt()))
+ *     setBlurConfig(BlurConfig(radius = 16f, tintColor = 0x80FFFFFF.toInt()))
  *     setBlurEnabled(true)
  * }
  * ```
@@ -166,11 +166,15 @@ class BlurView @JvmOverloads constructor(
                 4f
             )
 
-            // Parse overlay color (includes alpha)
-            val overlayColor = typedArray.getColor(
-                R.styleable.BlurView_blurOverlayColor,
+            // Parse tint color (prefer blurTintColor, fall back to blurOverlayColor)
+            val tintColor = typedArray.getColor(
+                R.styleable.BlurView_blurTintColor,
                 Color.TRANSPARENT
             ).takeIf { it != Color.TRANSPARENT }
+                ?: typedArray.getColor(
+                    R.styleable.BlurView_blurOverlayColor,
+                    Color.TRANSPARENT
+                ).takeIf { it != Color.TRANSPARENT }
 
             // Parse enabled state
             isBlurEnabled = typedArray.getBoolean(
@@ -187,7 +191,7 @@ class BlurView @JvmOverloads constructor(
             // Apply parsed config
             blurConfig = BlurConfig(
                 radius = radius,
-                tintColor = overlayColor,
+                tintColor = tintColor,
                 downsampleFactor = downsample
             )
         } finally {
@@ -233,12 +237,12 @@ class BlurView @JvmOverloads constructor(
     }
 
     /**
-     * Sets the overlay color with alpha.
+     * Sets the tint color with alpha.
      *
-     * @param color The overlay color including alpha (e.g., 0x80FFFFFF).
-     *              Use Color.TRANSPARENT or null for no overlay.
+     * @param color The tint color including alpha (e.g., 0x80FFFFFF).
+     *              Use Color.TRANSPARENT or null for no tint.
      */
-    fun setOverlayColor(color: Int?) {
+    fun setTintColor(color: Int?) {
         blurConfig = blurConfig.copy(tintColor = color?.takeIf { it != Color.TRANSPARENT })
         if (useRenderNode) {
             renderNodeController?.setConfig(blurConfig)
