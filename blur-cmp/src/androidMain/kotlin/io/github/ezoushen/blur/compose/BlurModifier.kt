@@ -72,22 +72,22 @@ fun Modifier.blurBehind(
  * OWN content (children), NOT the background behind it.
  *
  * @param radius The blur radius in pixels (0-25).
- * @param overlayColor Optional overlay color with alpha.
+ * @param tintColor Optional tint color with alpha.
  * @return A modifier that applies blur to the content inside.
  * @see BlurSurface for true blur-behind effect
  */
 @Deprecated(
     message = "This modifier blurs the composable's content, NOT the background. Use BlurSurface for true blur-behind effect.",
-    replaceWith = ReplaceWith("BlurSurface(radius = radius, overlayColor = overlayColor) { content }", "io.github.ezoushen.blur.compose.BlurSurface")
+    replaceWith = ReplaceWith("BlurSurface(radius = radius, tintColor = tintColor) { content }", "io.github.ezoushen.blur.compose.BlurSurface")
 )
 @Stable
 fun Modifier.blurBehind(
     radius: Float = 16f,
-    overlayColor: Color? = null
+    tintColor: Color? = null
 ): Modifier {
     val config = BlurConfig(
         radius = radius,
-        tintColor = overlayColor?.let {
+        tintColor = tintColor?.let {
             val alpha = (it.alpha * 255).toInt()
             val red = (it.red * 255).toInt()
             val green = (it.green * 255).toInt()

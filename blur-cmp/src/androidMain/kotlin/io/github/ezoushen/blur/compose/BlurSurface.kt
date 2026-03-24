@@ -29,7 +29,7 @@ import androidx.compose.ui.graphics.Color as ComposeColor
  * ```kotlin
  * BlurSurface(
  *     modifier = Modifier.fillMaxWidth().height(100.dp),
- *     config = BlurConfig(radius = 16f, overlayColor = 0x80FFFFFF.toInt())
+ *     config = BlurConfig(radius = 16f, tintColor = 0x80FFFFFF.toInt())
  * ) {
  *     Text("Content on blur surface")
  * }
@@ -82,7 +82,7 @@ fun BlurSurface(
  *
  * @param modifier Modifier to be applied to the surface.
  * @param radius The blur radius in pixels.
- * @param overlayColor Optional overlay color with alpha.
+ * @param tintColor Optional tint color with alpha.
  * @param downsampleFactor Factor to downsample the captured content before blurring (1-16).
  *                         Higher values improve performance but reduce quality. Default is 4.
  * @param isLive Whether the blur updates in real-time. Set to false to save energy
@@ -93,14 +93,14 @@ fun BlurSurface(
 fun BlurSurface(
     modifier: Modifier = Modifier,
     radius: Float = 16f,
-    overlayColor: ComposeColor? = null,
+    tintColor: ComposeColor? = null,
     downsampleFactor: Float = 4f,
     isLive: Boolean = true,
     content: @Composable BoxScope.() -> Unit
 ) {
     val config = BlurConfig(
         radius = radius,
-        tintColor = overlayColor?.let {
+        tintColor = tintColor?.let {
             val alpha = (it.alpha * 255).toInt()
             val red = (it.red * 255).toInt()
             val green = (it.green * 255).toInt()

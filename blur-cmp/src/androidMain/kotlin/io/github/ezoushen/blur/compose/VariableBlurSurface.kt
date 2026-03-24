@@ -47,7 +47,7 @@ import androidx.compose.ui.graphics.Color as ComposeColor
  *
  * @param modifier Modifier to be applied to the surface.
  * @param gradient The blur gradient that defines how blur radius varies.
- * @param config The blur configuration to apply (overlayColor, downsampleFactor).
+ * @param config The blur configuration to apply (tintColor, downsampleFactor).
  * @param isLive Whether the blur updates in real-time. Set to false to save energy
  *               when the background is static. Default is true.
  * @param content The content to display on top of the blur effect.
@@ -96,7 +96,7 @@ fun VariableBlurSurface(
  *
  * @param modifier Modifier to be applied to the surface.
  * @param gradient The blur gradient that defines how blur radius varies.
- * @param overlayColor Optional overlay color with alpha.
+ * @param tintColor Optional tint color with alpha.
  * @param downsampleFactor Factor to downsample the captured content before blurring (1-16).
  * @param isLive Whether the blur updates in real-time. Set to false to save energy
  *               when the background is static. Default is true.
@@ -106,14 +106,14 @@ fun VariableBlurSurface(
 fun VariableBlurSurface(
     modifier: Modifier = Modifier,
     gradient: BlurGradient,
-    overlayColor: ComposeColor? = null,
+    tintColor: ComposeColor? = null,
     downsampleFactor: Float = 4f,
     isLive: Boolean = true,
     content: @Composable BoxScope.() -> Unit
 ) {
     val config = BlurConfig(
         radius = gradient.maxRadius,
-        tintColor = overlayColor?.let {
+        tintColor = tintColor?.let {
             val alpha = (it.alpha * 255).toInt()
             val red = (it.red * 255).toInt()
             val green = (it.green * 255).toInt()
@@ -140,7 +140,7 @@ fun VariableBlurSurface(
  * @param modifier Modifier to be applied to the surface.
  * @param startRadius Blur radius at the top of the surface.
  * @param endRadius Blur radius at the bottom of the surface.
- * @param overlayColor Optional overlay color with alpha.
+ * @param tintColor Optional tint color with alpha.
  * @param downsampleFactor Factor to downsample the captured content before blurring (1-16).
  * @param isLive Whether the blur updates in real-time. Set to false to save energy
  *               when the background is static. Default is true.
@@ -151,7 +151,7 @@ fun VerticalBlurSurface(
     modifier: Modifier = Modifier,
     startRadius: Float = 0f,
     endRadius: Float = 25f,
-    overlayColor: ComposeColor? = null,
+    tintColor: ComposeColor? = null,
     downsampleFactor: Float = 4f,
     isLive: Boolean = true,
     content: @Composable BoxScope.() -> Unit
@@ -159,7 +159,7 @@ fun VerticalBlurSurface(
     VariableBlurSurface(
         modifier = modifier,
         gradient = BlurGradient.verticalGradient(startRadius, endRadius),
-        overlayColor = overlayColor,
+        tintColor = tintColor,
         downsampleFactor = downsampleFactor,
         isLive = isLive,
         content = content
@@ -175,7 +175,7 @@ fun VerticalBlurSurface(
  * @param modifier Modifier to be applied to the surface.
  * @param centerRadius Blur radius at the center (0 = sharp focus point).
  * @param edgeRadius Blur radius at the edges.
- * @param overlayColor Optional overlay color with alpha.
+ * @param tintColor Optional tint color with alpha.
  * @param downsampleFactor Factor to downsample the captured content before blurring (1-16).
  * @param isLive Whether the blur updates in real-time. Set to false to save energy
  *               when the background is static. Default is true.
@@ -186,7 +186,7 @@ fun RadialBlurSurface(
     modifier: Modifier = Modifier,
     centerRadius: Float = 0f,
     edgeRadius: Float = 30f,
-    overlayColor: ComposeColor? = null,
+    tintColor: ComposeColor? = null,
     downsampleFactor: Float = 4f,
     isLive: Boolean = true,
     content: @Composable BoxScope.() -> Unit
@@ -194,7 +194,7 @@ fun RadialBlurSurface(
     VariableBlurSurface(
         modifier = modifier,
         gradient = BlurGradient.radialGradient(centerRadius, edgeRadius),
-        overlayColor = overlayColor,
+        tintColor = tintColor,
         downsampleFactor = downsampleFactor,
         isLive = isLive,
         content = content

@@ -146,10 +146,10 @@ actual fun BlurOverlayHost(
  *
  *   capture (graphicsLayer content) → tint (ColorFilter) → blur (BlurEffect) → render
  *
- * - Normal blend tint: applied AFTER blur via createChainEffect(tint, blur)
- * - Non-Normal blend tint (e.g. ColorDodge): applied BEFORE blur via
- *   createChainEffect(blur, tint) so the blend mode interacts with the
- *   actual background pixels before they are blurred.
+ * - POST_BLUR tint: applied AFTER blur via createChainEffect(tint, blur)
+ * - PRE_BLUR tint: applied BEFORE blur via createChainEffect(blur, tint)
+ *   so the tint interacts with the actual background pixels before they
+ *   are blurred.
  * - No tint: blur only.
  *
  * background() is invoked here AND as an unblurred sibling at the Box root.
@@ -185,12 +185,11 @@ private fun RenderEffectBlurOverlay(
 }
 
 /**
- * Builds a chained RenderEffect that preserves the Kawase pipeline order:
- * capture → tint (with blend mode) → blur → render.
+ * Builds a chained RenderEffect based on tintOrder:
  *
  * - No tint: blur only
- * - Normal blend tint: blur first, then tint on top (post-blur overlay)
- * - Non-Normal blend tint: tint first (interacts with raw pixels), then blur
+ * - POST_BLUR: blur first, then tint on top → result = tint(blur(source))
+ * - PRE_BLUR: tint first, then blur → result = blur(tint(source))
  */
 @RequiresApi(Build.VERSION_CODES.S)
 private fun buildBlurRenderEffect(radius: Float, config: BlurOverlayConfig): RenderEffect? {
@@ -207,15 +206,14 @@ private fun buildBlurRenderEffect(radius: Float, config: BlurOverlayConfig): Ren
         BlendModeColorFilter(tintArgb, blendMode)
     )
 
-    return if (config.tintBlendMode == BlurBlendMode.Normal) {
-        // Normal: blur first → tint on top (post-blur overlay)
+    return if (config.tintOrder == TintOrder.PRE_BLUR) {
+        // Pre-blur: tint first → then blur
+        // result = blur(tint(source))
+        RenderEffect.createChainEffect(blurEffect, tintEffect)
+    } else {
+        // Post-blur (default): blur first → tint on top
         // result = tint(blur(source))
         RenderEffect.createChainEffect(tintEffect, blurEffect)
-    } else {
-        // Non-Normal (e.g. ColorDodge): tint first → then blur
-        // result = blur(tint(source))
-        // This matches Kawase pipeline: capture → tint → blur → render
-        RenderEffect.createChainEffect(blurEffect, tintEffect)
     }
 }
 
