@@ -46,7 +46,7 @@ internal object IosBackdropLayerProvider {
         )
 
         val subviews = effectView.subviews
-        for (i in 0 until subviews.count().toInt()) {
+        for (i in 0 until subviews.count()) {
             @Suppress("UNCHECKED_CAST")
             val view = subviews[i] as? UIView ?: continue
             val objcClass = object_getClass(view) ?: continue
@@ -84,29 +84,11 @@ internal object IosBackdropLayerProvider {
         }
     }
 
-    val isValidForUniformBlur: Boolean
-        get() {
-            prepareOnce()
-            return indexOfBackdropView > -1 &&
-                indexOfVisualEffectSubview > -1 &&
-                gaussianBlurFilterTemplate != null
-        }
-
     val isValidForVariableBlur: Boolean
         get() {
             prepareOnce()
             return backdropLayerClass != null && filterClass != null
         }
-
-    fun createBackdropLayer(): CALayer? {
-        prepareOnce()
-        val cls = backdropLayerClass ?: return null
-        return try {
-            cls.new() as? CALayer
-        } catch (_: Exception) {
-            null
-        }
-    }
 
     fun createGaussianBlurFilter(radius: Double): NSObject? {
         prepareOnce()
@@ -147,15 +129,6 @@ internal object IosBackdropLayerProvider {
         } catch (_: Exception) {
             null
         }
-    }
-
-    fun resetPreparation() {
-        preparedOnce = false
-        indexOfBackdropView = -1
-        indexOfVisualEffectSubview = -1
-        gaussianBlurFilterTemplate = null
-        filterClass = null
-        backdropLayerClass = null
     }
 }
 

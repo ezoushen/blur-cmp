@@ -183,7 +183,7 @@ internal class IosBlurState {
         val effectView = UIVisualEffectView(
             effect = UIBlurEffect.effectWithStyle(UIBlurEffectStyle.UIBlurEffectStyleLight)
         )
-        for (i in 0 until effectView.subviews.count().toInt()) {
+        for (i in 0 until effectView.subviews.count()) {
             @Suppress("UNCHECKED_CAST")
             val sv = effectView.subviews[i] as? UIView ?: continue
             val cls = NSStringFromClass(object_getClass(sv)!!)
@@ -233,9 +233,8 @@ internal class IosBlurState {
 
     private fun applyTint(config: BlurOverlayConfig) {
         val hasTint = config.tintColorValue != 0L
-        val isNonNormalBlend = config.tintBlendMode != BlurBlendMode.Normal
 
-        if (hasTint && isNonNormalBlend) {
+        if (hasTint && config.tintOrder == TintOrder.PRE_BLUR) {
             if (!isBeforeBlurActive) setupPreBlend()
             val color = argbToUIColor(config.tintColorValue)
             val filterName = IosBlendModeMapper.toCompositingFilterName(config.tintBlendMode)
@@ -243,7 +242,7 @@ internal class IosBlurState {
             preBlendTintLayer?.compositingFilter = filterName
             tintLayer?.backgroundColor = null
             tintLayer?.compositingFilter = null
-        } else if (hasTint) {
+        } else if (hasTint && config.tintOrder == TintOrder.POST_BLUR) {
             teardownPreBlend()
             val color = argbToUIColor(config.tintColorValue)
             val filterName = IosBlendModeMapper.toCompositingFilterName(config.tintBlendMode)
