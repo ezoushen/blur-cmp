@@ -227,14 +227,14 @@ class RenderNodeBlurController {
         )
 
         val tintColor = config.tintColor
-        if (tintColor == null) {
-            captureNode.setRenderEffect(blurEffect)
-            return
-        }
-
         val blendOrdinal = config.tintBlendModeOrdinal
-        if (config.tintOrder == io.github.ezoushen.blur.cmp.TintOrder.PRE_BLUR && blendOrdinal != null) {
-            // Pre-blur tint: tint → blur
+
+        if (tintColor != null &&
+            config.tintOrder == io.github.ezoushen.blur.cmp.TintOrder.PRE_BLUR &&
+            blendOrdinal != null
+        ) {
+            // Pre-blur tint: chain tint color filter before blur in the RenderEffect.
+            // result = blur(tint(source))
             val blendMode = AndroidBlendMode.values()[blendOrdinal]
             val tintEffect = RenderEffect.createColorFilterEffect(
                 BlendModeColorFilter(tintColor, blendMode)
@@ -243,16 +243,10 @@ class RenderNodeBlurController {
                 RenderEffect.createChainEffect(blurEffect, tintEffect)
             )
         } else {
-            // Post-blur tint: blur → tint
-            val blendMode = if (blendOrdinal != null) {
-                try { AndroidBlendMode.values()[blendOrdinal] } catch (_: Exception) { AndroidBlendMode.SRC_OVER }
-            } else AndroidBlendMode.SRC_OVER
-            val tintEffect = RenderEffect.createColorFilterEffect(
-                BlendModeColorFilter(tintColor, blendMode)
-            )
-            captureNode.setRenderEffect(
-                RenderEffect.createChainEffect(tintEffect, blurEffect)
-            )
+            // Post-blur tint (default) or no tint: blur-only RenderEffect.
+            // Tint is drawn in draw() via drawTint() so it composites correctly
+            // on top of the blurred output bitmap.
+            captureNode.setRenderEffect(blurEffect)
         }
     }
 
@@ -263,6 +257,32 @@ class RenderNodeBlurController {
         srcRect.set(0, 0, bitmap.width, bitmap.height)
         dstRect.set(0, 0, view.width, view.height)
         canvas.drawBitmap(bitmap, srcRect, dstRect, paint)
+
+        // Post-blur tint: draw tint on top of the blurred bitmap
+        drawTint(canvas)
+    }
+
+    /**
+     * Draws the tint color on top of the blurred output for POST_BLUR tint order.
+     * PRE_BLUR tint is handled inside the RenderEffect chain and does not need
+     * a separate canvas draw.
+     */
+    private fun drawTint(canvas: Canvas) {
+        if (config.tintOrder != io.github.ezoushen.blur.cmp.TintOrder.POST_BLUR) return
+        val tintColor = config.tintColor ?: return
+
+        val blendOrdinal = config.tintBlendModeOrdinal
+        val blendMode = if (blendOrdinal != null) {
+            try { AndroidBlendMode.values()[blendOrdinal] } catch (_: Exception) { AndroidBlendMode.SRC_OVER }
+        } else {
+            AndroidBlendMode.SRC_OVER
+        }
+
+        val tintPaint = Paint().apply {
+            color = tintColor
+            this.blendMode = blendMode
+        }
+        canvas.drawRect(dstRect, tintPaint)
     }
 
     fun release() {
