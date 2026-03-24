@@ -9,4 +9,6 @@ captures
 .cxx
 xcuserdata/
 *.xcuserstate
+*.xcbkptlist
 .kotlin/
+.claude/
