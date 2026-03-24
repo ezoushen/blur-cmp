@@ -14,6 +14,7 @@ import io.github.ezoushen.blur.algorithm.OpenGLBlur
 import io.github.ezoushen.blur.capture.ContentCapture
 import io.github.ezoushen.blur.capture.DecorViewCapture
 import io.github.ezoushen.blur.capture.SurfaceTextureCapture
+import io.github.ezoushen.blur.cmp.TintOrder
 import io.github.ezoushen.blur.util.BitmapPool
 
 /**
@@ -101,8 +102,11 @@ class BlurController(
             if (this.config.pipelineStrategy != config.pipelineStrategy) {
                 resolvedStrategy = null
             }
-            if (this.config.preBlurTintColor != config.preBlurTintColor ||
-                this.config.preBlurBlendModeOrdinal != config.preBlurBlendModeOrdinal) {
+            if (this.config.tintOrder != config.tintOrder) {
+                contentDirty = true
+            } else if (config.tintOrder == TintOrder.PRE_BLUR &&
+                (this.config.tintColor != config.tintColor ||
+                 this.config.tintBlendModeOrdinal != config.tintBlendModeOrdinal)) {
                 contentDirty = true
             } else {
                 configDirty = true
@@ -291,12 +295,13 @@ class BlurController(
             return false
         }
 
-        applyPreBlurTint(captureOutput)
+        if (config.tintOrder == TintOrder.PRE_BLUR) {
+            applyTint(captureOutput)
+        }
 
         blurredBitmap = algorithm.blur(captureOutput, scaledRadius)
         return true
     }
-
 
     /**
      * SURFACE_TEXTURE path (API 26+): Surface.lockHardwareCanvas -> SurfaceTexture -> GL_TEXTURE_EXTERNAL_OES.
@@ -343,54 +348,57 @@ class BlurController(
     }
 
     /**
-     * Applies pre-blur tint with blend mode to the captured bitmap.
-     * This is used for non-Normal blend modes where the tint should be
-     * part of the blurred content (capture → tint → blur → render).
+     * Applies tint with blend mode to the captured bitmap (pre-blur path).
      */
-    private fun applyPreBlurTint(bitmap: Bitmap) {
-        val tintColor = config.preBlurTintColor ?: return
-        val blendOrdinal = config.preBlurBlendModeOrdinal ?: return
+    private fun applyTint(bitmap: Bitmap) {
+        val color = config.tintColor ?: return
 
         val canvas = Canvas(bitmap)
-        tintPaint.color = tintColor
+        tintPaint.color = color
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            try {
-                val blendMode = android.graphics.BlendMode.values()[blendOrdinal]
-                tintPaint.blendMode = blendMode
-            } catch (_: Exception) {
-                // Fallback: just draw with SRC_OVER
-                tintPaint.blendMode = null
-            }
+            val ordinal = config.tintBlendModeOrdinal
+            tintPaint.blendMode = if (ordinal != null) {
+                try { android.graphics.BlendMode.values()[ordinal] } catch (_: Exception) { null }
+            } else null
         }
 
         canvas.drawRect(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat(), tintPaint)
     }
 
     /**
-     * Draws the blurred content and overlay to the canvas.
+     * Draws a tint rectangle on the canvas using the configured tint color and blend mode.
+     */
+    private fun drawTint(canvas: Canvas) {
+        val color = config.tintColor ?: return
+        tintPaint.color = color
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val ordinal = config.tintBlendModeOrdinal
+            tintPaint.blendMode = if (ordinal != null) {
+                try { android.graphics.BlendMode.values()[ordinal] } catch (_: Exception) { null }
+            } else null
+        }
+        val view = blurView ?: return
+        canvas.drawRect(0f, 0f, view.width.toFloat(), view.height.toFloat(), tintPaint)
+    }
+
+    /**
+     * Draws the blurred content and optional post-blur tint to the canvas.
      *
      * Call this in the blur view's onDraw method.
      *
      * @param canvas Canvas to draw to
      */
     fun draw(canvas: Canvas) {
-        val blurred = blurredBitmap
-        val view = blurView
+        val blurred = blurredBitmap ?: return
+        val view = blurView ?: return
 
-        if (blurred == null || view == null) {
-            return
-        }
-
-        // Draw blurred bitmap scaled to view size
         srcRect.set(0, 0, blurred.width, blurred.height)
         dstRect.set(0, 0, view.width, view.height)
         canvas.drawBitmap(blurred, srcRect, dstRect, paint)
 
-        // Draw overlay color (alpha is already included in the color)
-        val overlayColor = config.overlayColor
-        if (overlayColor != null) {
-            canvas.drawColor(overlayColor)
+        if (config.tintOrder == TintOrder.POST_BLUR) {
+            drawTint(canvas)
         }
     }
 
