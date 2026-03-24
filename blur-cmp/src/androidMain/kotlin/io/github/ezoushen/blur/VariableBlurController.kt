@@ -353,15 +353,17 @@ class VariableBlurController(
             return updateLegacy(view, source, scaledWidth, scaledHeight, scaledMaxRadius, effectiveDownsample)
         }
 
+        val dummyBitmap = captureBitmap ?: run {
+            captureBitmap = bitmapPool.acquire(scaledWidth, scaledHeight)
+            captureBitmap
+        } ?: return false
+
         if (config.tintOrder == TintOrder.PRE_BLUR) {
-            applyTint(captureBitmap ?: run {
-                captureBitmap = bitmapPool.acquire(scaledWidth, scaledHeight)
-                captureBitmap
-            } ?: return false)
+            applyTint(dummyBitmap)
         }
 
         val tb0 = if (BlurPerfMonitor.enabled) System.nanoTime() else 0L
-        blurredBitmap = algorithm.blur(captureBitmap!!, scaledMaxRadius)
+        blurredBitmap = algorithm.blur(dummyBitmap, scaledMaxRadius)
         if (BlurPerfMonitor.enabled) {
             val captureUs = (tb0 - tc0) / 1000
             val blurUs = (System.nanoTime() - tb0) / 1000
