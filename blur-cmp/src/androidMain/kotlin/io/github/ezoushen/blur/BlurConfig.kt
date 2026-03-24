@@ -58,3 +58,9 @@ data class BlurConfig(
         val Heavy = BlurConfig(radius = 50f, tintColor = 0x80FFFFFF.toInt())
     }
 }
+
+/** Cached BlendMode.values() array — avoids per-frame allocation. API 29+. */
+@get:androidx.annotation.RequiresApi(android.os.Build.VERSION_CODES.Q)
+internal val BLEND_MODE_VALUES: Array<android.graphics.BlendMode> by lazy {
+    android.graphics.BlendMode.values()
+}

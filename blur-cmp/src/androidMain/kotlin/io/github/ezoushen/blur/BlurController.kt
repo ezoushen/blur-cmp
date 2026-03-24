@@ -370,7 +370,7 @@ class BlurController(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val ordinal = config.tintBlendModeOrdinal
             tintPaint.blendMode = if (ordinal != null) {
-                try { android.graphics.BlendMode.values()[ordinal] } catch (_: Exception) { null }
+                try { BLEND_MODE_VALUES[ordinal] } catch (_: Exception) { null }
             } else null
         }
 
@@ -386,7 +386,7 @@ class BlurController(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val ordinal = config.tintBlendModeOrdinal
             tintPaint.blendMode = if (ordinal != null) {
-                try { android.graphics.BlendMode.values()[ordinal] } catch (_: Exception) { null }
+                try { BLEND_MODE_VALUES[ordinal] } catch (_: Exception) { null }
             } else null
         }
         val view = blurView ?: return
@@ -424,6 +424,7 @@ class BlurController(
 
         surfaceTextureCapture?.release()
         surfaceTextureCapture = null
+        pendingStExcludedViews.clear()
         resolvedStrategy = null
 
         captureBitmap?.let { bitmapPool.release(it) }

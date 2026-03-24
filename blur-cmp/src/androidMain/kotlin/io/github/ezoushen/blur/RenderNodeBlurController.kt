@@ -64,6 +64,7 @@ class RenderNodeBlurController {
     private val sourceLocation = IntArray(2)
     private val blurViewLocation = IntArray(2)
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val tintPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val srcRect = Rect()
     private val dstRect = Rect()
 
@@ -235,7 +236,7 @@ class RenderNodeBlurController {
         ) {
             // Pre-blur tint: chain tint color filter before blur in the RenderEffect.
             // result = blur(tint(source))
-            val blendMode = AndroidBlendMode.values()[blendOrdinal]
+            val blendMode = BLEND_MODE_VALUES[blendOrdinal]
             val tintEffect = RenderEffect.createColorFilterEffect(
                 BlendModeColorFilter(tintColor, blendMode)
             )
@@ -258,29 +259,19 @@ class RenderNodeBlurController {
         dstRect.set(0, 0, view.width, view.height)
         canvas.drawBitmap(bitmap, srcRect, dstRect, paint)
 
-        // Post-blur tint: draw tint on top of the blurred bitmap
-        drawTint(canvas)
+        if (config.tintOrder == io.github.ezoushen.blur.cmp.TintOrder.POST_BLUR) {
+            drawTint(canvas)
+        }
     }
 
-    /**
-     * Draws the tint color on top of the blurred output for POST_BLUR tint order.
-     * PRE_BLUR tint is handled inside the RenderEffect chain and does not need
-     * a separate canvas draw.
-     */
     private fun drawTint(canvas: Canvas) {
-        if (config.tintOrder != io.github.ezoushen.blur.cmp.TintOrder.POST_BLUR) return
         val tintColor = config.tintColor ?: return
-
-        val blendOrdinal = config.tintBlendModeOrdinal
-        val blendMode = if (blendOrdinal != null) {
-            try { AndroidBlendMode.values()[blendOrdinal] } catch (_: Exception) { AndroidBlendMode.SRC_OVER }
-        } else {
-            AndroidBlendMode.SRC_OVER
-        }
-
-        val tintPaint = Paint().apply {
-            color = tintColor
-            this.blendMode = blendMode
+        tintPaint.color = tintColor
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val ordinal = config.tintBlendModeOrdinal
+            tintPaint.blendMode = if (ordinal != null) {
+                try { BLEND_MODE_VALUES[ordinal] } catch (_: Exception) { null }
+            } else null
         }
         canvas.drawRect(dstRect, tintPaint)
     }

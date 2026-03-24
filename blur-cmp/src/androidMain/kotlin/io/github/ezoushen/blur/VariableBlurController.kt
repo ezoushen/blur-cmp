@@ -365,17 +365,17 @@ class VariableBlurController(
             return updateLegacy(view, source, scaledWidth, scaledHeight, scaledMaxRadius, effectiveDownsample)
         }
 
-        val dummyBitmap = captureBitmap ?: run {
+        val blurInput = captureBitmap ?: run {
             captureBitmap = bitmapPool.acquire(scaledWidth, scaledHeight)
             captureBitmap
         } ?: return false
 
         if (config.tintOrder == TintOrder.PRE_BLUR) {
-            applyTint(dummyBitmap)
+            applyTint(blurInput)
         }
 
         val tb0 = if (BlurPerfMonitor.enabled) System.nanoTime() else 0L
-        blurredBitmap = algorithm.blur(dummyBitmap, scaledMaxRadius)
+        blurredBitmap = algorithm.blur(blurInput, scaledMaxRadius)
         if (BlurPerfMonitor.enabled) {
             val captureUs = (tb0 - tc0) / 1000
             val blurUs = (System.nanoTime() - tb0) / 1000
@@ -396,7 +396,7 @@ class VariableBlurController(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val ordinal = config.tintBlendModeOrdinal
             tintPaint.blendMode = if (ordinal != null) {
-                try { android.graphics.BlendMode.values()[ordinal] } catch (_: Exception) { null }
+                try { BLEND_MODE_VALUES[ordinal] } catch (_: Exception) { null }
             } else null
         }
 
@@ -412,7 +412,7 @@ class VariableBlurController(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val ordinal = config.tintBlendModeOrdinal
             tintPaint.blendMode = if (ordinal != null) {
-                try { android.graphics.BlendMode.values()[ordinal] } catch (_: Exception) { null }
+                try { BLEND_MODE_VALUES[ordinal] } catch (_: Exception) { null }
             } else null
         }
         val view = blurView ?: return
@@ -450,6 +450,7 @@ class VariableBlurController(
 
         surfaceTextureCapture?.release()
         surfaceTextureCapture = null
+        pendingStExcludedViews.clear()
         resolvedStrategy = null
 
         captureBitmap?.let { bitmapPool.release(it) }
