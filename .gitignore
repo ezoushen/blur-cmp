@@ -11,4 +11,4 @@ xcuserdata/
 *.xcuserstate
 *.xcbkptlist
 .kotlin/
-.claude/
+docs/superpowers/
