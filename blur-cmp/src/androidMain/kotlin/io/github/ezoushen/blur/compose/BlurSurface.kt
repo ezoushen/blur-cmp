@@ -100,7 +100,7 @@ fun BlurSurface(
 ) {
     val config = BlurConfig(
         radius = radius,
-        overlayColor = overlayColor?.let {
+        tintColor = overlayColor?.let {
             val alpha = (it.alpha * 255).toInt()
             val red = (it.red * 255).toInt()
             val green = (it.green * 255).toInt()

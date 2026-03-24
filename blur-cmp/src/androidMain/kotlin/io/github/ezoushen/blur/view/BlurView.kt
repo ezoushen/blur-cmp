@@ -187,7 +187,7 @@ class BlurView @JvmOverloads constructor(
             // Apply parsed config
             blurConfig = BlurConfig(
                 radius = radius,
-                overlayColor = overlayColor,
+                tintColor = overlayColor,
                 downsampleFactor = downsample
             )
         } finally {
@@ -239,7 +239,7 @@ class BlurView @JvmOverloads constructor(
      *              Use Color.TRANSPARENT or null for no overlay.
      */
     fun setOverlayColor(color: Int?) {
-        blurConfig = blurConfig.copy(overlayColor = color?.takeIf { it != Color.TRANSPARENT })
+        blurConfig = blurConfig.copy(tintColor = color?.takeIf { it != Color.TRANSPARENT })
         if (useRenderNode) {
             renderNodeController?.setConfig(blurConfig)
         } else {

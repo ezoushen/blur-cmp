@@ -226,39 +226,34 @@ class RenderNodeBlurController {
             effectiveRadius, effectiveRadius, Shader.TileMode.CLAMP
         )
 
-        val hasTint = config.overlayColor != null || config.preBlurTintColor != null
-        if (!hasTint) {
+        val tintColor = config.tintColor
+        if (tintColor == null) {
             captureNode.setRenderEffect(blurEffect)
             return
         }
 
-        // Pre-blur tint (non-Normal blend): tint → blur
-        val preBlurColor = config.preBlurTintColor
-        val preBlurBlendOrdinal = config.preBlurBlendModeOrdinal
-        if (preBlurColor != null && preBlurBlendOrdinal != null) {
-            val blendMode = AndroidBlendMode.values()[preBlurBlendOrdinal]
+        val blendOrdinal = config.tintBlendModeOrdinal
+        if (config.tintOrder == io.github.ezoushen.blur.cmp.TintOrder.PRE_BLUR && blendOrdinal != null) {
+            // Pre-blur tint: tint → blur
+            val blendMode = AndroidBlendMode.values()[blendOrdinal]
             val tintEffect = RenderEffect.createColorFilterEffect(
-                BlendModeColorFilter(preBlurColor, blendMode)
+                BlendModeColorFilter(tintColor, blendMode)
             )
             captureNode.setRenderEffect(
                 RenderEffect.createChainEffect(blurEffect, tintEffect)
             )
-            return
-        }
-
-        // Post-blur tint (Normal blend): blur → tint
-        val overlayColor = config.overlayColor
-        if (overlayColor != null) {
+        } else {
+            // Post-blur tint: blur → tint
+            val blendMode = if (blendOrdinal != null) {
+                try { AndroidBlendMode.values()[blendOrdinal] } catch (_: Exception) { AndroidBlendMode.SRC_OVER }
+            } else AndroidBlendMode.SRC_OVER
             val tintEffect = RenderEffect.createColorFilterEffect(
-                BlendModeColorFilter(overlayColor, AndroidBlendMode.SRC_OVER)
+                BlendModeColorFilter(tintColor, blendMode)
             )
             captureNode.setRenderEffect(
                 RenderEffect.createChainEffect(tintEffect, blurEffect)
             )
-            return
         }
-
-        captureNode.setRenderEffect(blurEffect)
     }
 
     fun draw(canvas: Canvas) {

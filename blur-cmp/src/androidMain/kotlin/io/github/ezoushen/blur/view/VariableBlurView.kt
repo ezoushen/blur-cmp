@@ -216,7 +216,7 @@ class VariableBlurView @JvmOverloads constructor(
             // Apply config
             blurConfig = BlurConfig(
                 radius = endRadius, // Use max radius for config
-                overlayColor = overlayColor,
+                tintColor = overlayColor,
                 downsampleFactor = downsample
             )
         } finally {
@@ -263,7 +263,7 @@ class VariableBlurView @JvmOverloads constructor(
      *              Use Color.TRANSPARENT or null for no overlay.
      */
     fun setOverlayColor(color: Int?) {
-        blurConfig = blurConfig.copy(overlayColor = color?.takeIf { it != Color.TRANSPARENT })
+        blurConfig = blurConfig.copy(tintColor = color?.takeIf { it != Color.TRANSPARENT })
         blurController?.setConfig(blurConfig)
         invalidate()
     }

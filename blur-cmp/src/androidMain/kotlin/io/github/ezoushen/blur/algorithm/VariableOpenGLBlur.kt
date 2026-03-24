@@ -84,8 +84,6 @@ class VariableOpenGLBlur : BlurAlgorithm {
     private var compAspectRatioLoc = -1
     private var compMinLevelLoc = -1
     private var compMaxLevelLoc = -1
-    private var compHasOverlayLoc = -1
-    private var compOverlayColorLoc = -1
     private var compGradientTypeLoc = -1
     private var compGradientStartLoc = -1
     private var compGradientEndLoc = -1
@@ -125,7 +123,6 @@ class VariableOpenGLBlur : BlurAlgorithm {
     private var hasExternalOes = false
 
     private var currentGradient: BlurGradient? = null
-    private var currentOverlayColor: Int? = null
     // Pre-sorted stops cache (avoids per-frame sortedBy allocation)
     private var sortedStops: List<Pair<Float, Float>>? = null
 
@@ -169,16 +166,6 @@ class VariableOpenGLBlur : BlurAlgorithm {
             is BlurGradient.RadialWithStops -> gradient.stops.sortedBy { it.first }.take(MAX_STOPS)
             else -> null
         }
-    }
-
-    /**
-     * Sets the overlay color for gradient-aware overlay blending.
-     * The overlay alpha follows the blur gradient - more blur = more overlay.
-     *
-     * @param color The overlay color with alpha (e.g., 0x80FFFFFF), or null for no overlay.
-     */
-    fun setOverlayColor(color: Int?) {
-        currentOverlayColor = color
     }
 
     override fun prepare(context: Context, width: Int, height: Int, radius: Float): Boolean {
@@ -466,30 +453,10 @@ class VariableOpenGLBlur : BlurAlgorithm {
         setGradientUniforms(gradient)
         GLES20.glUniform1f(compMinLevelLoc, minLevel.toFloat())
         GLES20.glUniform1f(compMaxLevelLoc, maxLevel.toFloat())
-        setOverlayUniforms()
 
         drawQuadCached(compPositionLoc, compTexCoordLoc)
 
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-    }
-
-    /**
-     * Sets overlay-related uniforms in the composite shader.
-     */
-    private fun setOverlayUniforms() {
-        val overlayColor = currentOverlayColor
-        if (overlayColor != null) {
-            GLES20.glUniform1f(compHasOverlayLoc, 1.0f)
-            val a = ((overlayColor shr 24) and 0xFF) / 255f
-            val r = ((overlayColor shr 16) and 0xFF) / 255f
-            val g = ((overlayColor shr 8) and 0xFF) / 255f
-            val b = (overlayColor and 0xFF) / 255f
-
-            GLES20.glUniform4f(compOverlayColorLoc, r, g, b, a)
-        } else {
-            GLES20.glUniform1f(compHasOverlayLoc, 0.0f)
-            GLES20.glUniform4f(compOverlayColorLoc, 0f, 0f, 0f, 0f)
-        }
     }
 
     /**
@@ -772,8 +739,6 @@ class VariableOpenGLBlur : BlurAlgorithm {
         compAspectRatioLoc = GLES20.glGetUniformLocation(compositeProgram, "uAspectRatio")
         compMinLevelLoc = GLES20.glGetUniformLocation(compositeProgram, "uMinLevel")
         compMaxLevelLoc = GLES20.glGetUniformLocation(compositeProgram, "uMaxLevel")
-        compHasOverlayLoc = GLES20.glGetUniformLocation(compositeProgram, "uHasOverlay")
-        compOverlayColorLoc = GLES20.glGetUniformLocation(compositeProgram, "uOverlayColor")
         compGradientTypeLoc = GLES20.glGetUniformLocation(compositeProgram, "uGradientType")
         compGradientStartLoc = GLES20.glGetUniformLocation(compositeProgram, "uGradientStart")
         compGradientEndLoc = GLES20.glGetUniformLocation(compositeProgram, "uGradientEnd")
@@ -1152,10 +1117,6 @@ class VariableOpenGLBlur : BlurAlgorithm {
             uniform float uStopPositions[8];
             uniform float uStopRadii[8];
 
-            // Overlay color (RGBA, premultiplied alpha)
-            uniform vec4 uOverlayColor;
-            uniform float uHasOverlay;
-
             varying vec2 vTexCoord;
 
             const float BASE_SIGMA = 1.0;
@@ -1301,21 +1262,6 @@ class VariableOpenGLBlur : BlurAlgorithm {
 
                     // Sample with interpolation between levels
                     blurredColor = sampleAtLevel(level);
-                }
-
-                // Apply gradient-aware overlay if enabled
-                if (uHasOverlay > 0.5) {
-                    // Calculate overlay factor based on blur radius
-                    // Normalize blur radius to 0-1 range using max of start/end radius
-                    float maxRadius = max(uStartRadius, uEndRadius);
-                    float overlayFactor = maxRadius > 0.0 ? clamp(blurRadius / maxRadius, 0.0, 1.0) : 0.0;
-
-                    // Scale overlay alpha by the factor (more blur = more overlay)
-                    float scaledAlpha = uOverlayColor.a * overlayFactor;
-
-                    // Blend overlay color with blurred content using standard alpha blending
-                    // result = overlay * scaledAlpha + blur * (1 - scaledAlpha)
-                    blurredColor.rgb = mix(blurredColor.rgb, uOverlayColor.rgb, scaledAlpha);
                 }
 
                 gl_FragColor = blurredColor;

@@ -49,16 +49,16 @@ fun Modifier.blurBehind(
             }
         }.drawWithContent {
             drawContent()
-            // Draw overlay color (alpha is included in the color)
-            config.overlayColor?.let { color ->
+            // Draw tint color (alpha is included in the color)
+            config.tintColor?.let { color ->
                 drawRect(color = Color(color))
             }
         }
     } else {
-        // Fallback for older APIs - just show overlay without blur
+        // Fallback for older APIs - just show tint without blur
         this.drawWithContent {
             drawContent()
-            config.overlayColor?.let { color ->
+            config.tintColor?.let { color ->
                 drawRect(color = Color(color))
             }
         }
@@ -87,7 +87,7 @@ fun Modifier.blurBehind(
 ): Modifier {
     val config = BlurConfig(
         radius = radius,
-        overlayColor = overlayColor?.let {
+        tintColor = overlayColor?.let {
             val alpha = (it.alpha * 255).toInt()
             val red = (it.red * 255).toInt()
             val green = (it.green * 255).toInt()
