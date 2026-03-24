@@ -155,7 +155,8 @@ class SurfaceTextureCapture {
         surfaceTexture = null
         lastWidth = 0
         lastHeight = 0
-        excludedViews.clear()
+        // Note: excludedViews are NOT cleared here — they are managed
+        // by the controller and persist across init/release cycles.
     }
 
     companion object {

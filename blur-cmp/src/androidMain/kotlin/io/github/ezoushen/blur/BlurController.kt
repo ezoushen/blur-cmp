@@ -60,6 +60,7 @@ class BlurController(
     // SurfaceTexture capture for zero-copy API 26-28 path
     private var surfaceTextureCapture: SurfaceTextureCapture? = null
     private var resolvedStrategy: BlurPipelineStrategy? = null
+    private val pendingStExcludedViews = mutableListOf<View>()
 
     private var captureBitmap: Bitmap? = null
     private var blurredBitmap: Bitmap? = null
@@ -148,11 +149,17 @@ class BlurController(
 
     fun addExcludedView(view: View) {
         (capture as? DecorViewCapture)?.addExcludedView(view)
-        surfaceTextureCapture?.addExcludedView(view)
+        val stCapture = surfaceTextureCapture
+        if (stCapture != null) {
+            stCapture.addExcludedView(view)
+        } else {
+            pendingStExcludedViews.add(view)
+        }
     }
 
     fun removeExcludedView(view: View) {
         (capture as? DecorViewCapture)?.removeExcludedView(view)
+        pendingStExcludedViews.remove(view)
         surfaceTextureCapture?.removeExcludedView(view)
     }
 
@@ -322,6 +329,10 @@ class BlurController(
         if (stCapture == null) {
             stCapture = SurfaceTextureCapture()
             surfaceTextureCapture = stCapture
+            for (pending in pendingStExcludedViews) {
+                stCapture.addExcludedView(pending)
+            }
+            pendingStExcludedViews.clear()
         }
 
         // Get or create the external OES texture

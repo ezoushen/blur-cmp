@@ -61,6 +61,8 @@ class VariableBlurController(
     // SurfaceTexture capture for zero-copy API 26-28 path
     private var surfaceTextureCapture: SurfaceTextureCapture? = null
     private var resolvedStrategy: BlurPipelineStrategy? = null
+    // Excluded views pending forwarding to SurfaceTextureCapture (created lazily)
+    private val pendingStExcludedViews = mutableListOf<View>()
 
     private var gradient: BlurGradient? = null
 
@@ -168,11 +170,17 @@ class VariableBlurController(
 
     fun addExcludedView(view: View) {
         (capture as? DecorViewCapture)?.addExcludedView(view)
-        surfaceTextureCapture?.addExcludedView(view)
+        val stCapture = surfaceTextureCapture
+        if (stCapture != null) {
+            stCapture.addExcludedView(view)
+        } else {
+            pendingStExcludedViews.add(view)
+        }
     }
 
     fun removeExcludedView(view: View) {
         (capture as? DecorViewCapture)?.removeExcludedView(view)
+        pendingStExcludedViews.remove(view)
         surfaceTextureCapture?.removeExcludedView(view)
     }
 
@@ -341,6 +349,10 @@ class VariableBlurController(
         if (stCapture == null) {
             stCapture = SurfaceTextureCapture()
             surfaceTextureCapture = stCapture
+            for (pending in pendingStExcludedViews) {
+                stCapture.addExcludedView(pending)
+            }
+            pendingStExcludedViews.clear()
         }
 
         val externalTexId = algorithm.getExternalInputTextureId()
