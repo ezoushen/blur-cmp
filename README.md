@@ -37,16 +37,7 @@ kotlin {
 }
 ```
 
-For Android, blur-cmp depends on `blur-core` for the native OpenGL blur engine:
-
-```kotlin
-// settings.gradle.kts — if using local source
-includeBuild("../blur-android") {
-    dependencySubstitution {
-        substitute(module("io.github.ezoushen:blur-core")).using(project(":blur-core"))
-    }
-}
-```
+The blur engine is bundled — no additional dependencies needed.
 
 ## Quick Start
 
@@ -99,6 +90,7 @@ fun MyScreen() {
 BlurOverlayConfig(
     radius = 20f,              // blur radius in logical pixels (0 = no blur)
     tintBlendMode = BlurBlendMode.Normal,  // blend mode for tint
+    tintOrder = TintOrder.POST_BLUR,       // POST_BLUR (default) or PRE_BLUR
     downsampleFactor = 4f,     // Android only: higher = faster, lower quality
     gradient = null,           // null = uniform blur, or BlurGradientType
     isLive = true,             // true = updates every frame
@@ -205,7 +197,21 @@ BlurOverlayConfig(
 
 Available modes: `Normal`, `ColorDodge`, `ColorBurn`, `Multiply`, `Screen`, `Overlay`, `SoftLight`, `HardLight`, `Darken`, `Lighten`, `Difference`, `Exclusion`
 
-Color Dodge with tint creates a brightening bloom effect. The ordering is always: capture background → apply tint with blend mode → blur the result.
+Color Dodge with tint creates a brightening bloom effect.
+
+### Tint Order
+
+By default, tint is applied **after** blur (`TintOrder.POST_BLUR`), matching Apple's `UIVisualEffectView` and CSS `backdrop-filter`. This produces a sharp, uniform tint over the blurred result.
+
+For a softer look where the tint gets diffused by the blur, use `TintOrder.PRE_BLUR`:
+
+```kotlin
+BlurOverlayConfig(
+    radius = 15f,
+    tintBlendMode = BlurBlendMode.ColorDodge,
+    tintOrder = TintOrder.PRE_BLUR,  // tint blended into content before blur
+).withTint(Color.White.copy(alpha = 0.2f))
+```
 
 ## Runtime Control
 
@@ -231,12 +237,13 @@ blurState.requestUpdate()
 
 ### Android
 
-Uses `blur-core`'s `BlurView` / `VariableBlurView` hosted via `AndroidView`:
+Uses `BlurView` / `VariableBlurView` hosted via `AndroidView`:
 
-1. `DecorViewCapture` draws the DecorView to a downsampled bitmap
-2. OpenGL Dual Kawase blur processes the bitmap on GPU (~6 passes, constant cost regardless of radius)
-3. Blurred bitmap is drawn scaled-up behind the content
-4. Content overlay is excluded from capture to prevent glow artifacts
+1. **Capture**: SurfaceTexture GPU capture via `lockHardwareCanvas` (API 26+), or software canvas fallback
+2. **Blur**: OpenGL ES 2.0 Dual Kawase with shared downsample chain (~5ms on Pixel 9)
+3. **Output**: `glReadPixels` → `canvas.drawBitmap`, or TextureView for TBDR GPUs
+4. **Content exclusion**: overlay content hidden during capture to prevent glow artifacts
+5. **API 31+**: `RenderNodeBlurController` uses `RenderEffect` for uniform blur (zero-copy GPU path)
 
 ### iOS
 
