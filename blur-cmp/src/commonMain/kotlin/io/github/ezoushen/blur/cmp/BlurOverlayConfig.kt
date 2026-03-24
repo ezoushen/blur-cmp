@@ -11,6 +11,7 @@ package io.github.ezoushen.blur.cmp
  *   Only affects Android. iOS uses compositor-level scale.
  * @param gradient Optional variable blur gradient. null = uniform blur.
  * @param isLive Whether the blur updates every frame (true) or is static (false).
+ * @param tintOrder Controls whether tint is applied before or after blur.
  */
 data class BlurOverlayConfig(
     val radius: Float = 16f,
@@ -19,6 +20,7 @@ data class BlurOverlayConfig(
     val downsampleFactor: Float = 4f,
     val gradient: BlurGradientType? = null,
     val isLive: Boolean = true,
+    val tintOrder: TintOrder = TintOrder.POST_BLUR,
 ) {
     init {
         require(radius >= 0f) { "radius must be >= 0, was $radius" }
