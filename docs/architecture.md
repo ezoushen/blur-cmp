@@ -10,6 +10,7 @@
 │    ├── alpha: Float      ├── radius: Float              │
 │    ├── isEnabled: Bool   ├── tintColorValue: Long       │
 │    └── config ───────────├── tintBlendMode: BlurBlendMode│
+│                          ├── tintOrder: TintOrder        │
 │                          ├── downsampleFactor: Float     │
 │                          ├── gradient: BlurGradientType? │
 │                          └── isLive: Boolean             │
@@ -19,13 +20,13 @@
                  │                      │
         ┌────────▼────────┐    ┌────────▼────────┐
         │   androidMain   │    │     iosMain      │
-        │  Software Cap   │    │  GPU Compositor  │
+        │  SurfaceTexture │    │  GPU Compositor  │
         │  + OpenGL Blur  │    │  CABackdropLayer │
         └─────────────────┘    └──────────────────┘
 ```
 
 The two platforms use **fundamentally different strategies**:
-- **Android**: CPU capture → GPU blur → CPU readback → View draw
+- **Android**: GPU capture (SurfaceTexture/lockHardwareCanvas) → Kawase blur (OpenGL ES 2.0) → glReadPixels → View draw. API 31+: RenderNode + RenderEffect path.
 - **iOS**: Zero-copy GPU compositor capture via private `CABackdropLayer`
 
 ---
@@ -52,9 +53,9 @@ RenderNode recording + RenderEffect blur:
   │     captureNode.setRenderEffect(                              │
   │       RenderEffect.createBlurEffect(r, r, CLAMP)             │
   │     )                                                         │
-  │     Tint via createChainEffect:                               │
-  │       Non-Normal: blur(tint(source)) — pre-blur tint          │
-  │       Normal:     tint(blur(source)) — post-blur overlay      │
+  │     Tint via createChainEffect (controlled by TintOrder):      │
+  │       POST_BLUR: tint(blur(source)) — tint after blur (default)│
+  │       PRE_BLUR:  blur(tint(source)) — tint before blur         │
   │                                                               │
   │  3. RASTERIZE via HardwareRenderer → HardwareBuffer           │
   │     Severs the RenderNode graph (prevents circular ref)       │
@@ -166,14 +167,12 @@ Falls through to Kawase pipeline (Section 2.1+) when:
                        │
                        ▼
   ┌────────────────────────────────────────────────────┐
-  │ 3. PRE-BLUR TINT (optional, non-Normal blend)     │
+  │ 3. TINT (configurable via TintOrder)              │
   │                                                    │
-  │    Canvas(capturedBitmap)                           │
-  │      .drawRect(tintColor, blendMode=ColorDodge)    │
-  │                                                    │
-  │    This bakes the tint INTO the pixels before blur │
-  │    so the blend mode interacts with content, not   │
-  │    a post-blur transparent surface.                │
+  │    POST_BLUR (default): tint applied in draw()     │
+  │      after blurred bitmap — matches Apple style    │
+  │    PRE_BLUR: tint baked into capture bitmap before │
+  │      blur — creates softer diffused look           │
   └────────────────────┬───────────────────────────────┘
                        │
                        ▼
@@ -202,7 +201,7 @@ Falls through to Kawase pipeline (Section 2.1+) when:
   │ 5. RENDER (BlurView.onDraw)                        │
   │                                                    │
   │    canvas.drawBitmap(blurred, srcRect, dstRect)    │
-  │    canvas.drawColor(overlayColor)  ← post-blur tint│
+  │    if (POST_BLUR) drawTint(canvas)  ← tint on top │
   └────────────────────────────────────────────────────┘
 ```
 
@@ -358,18 +357,18 @@ Falls through to Kawase pipeline (Section 2.1+) when:
     5. removeFromSuperview() → re-parent into our container
 ```
 
-### 3.4 Tint Modes
+### 3.4 Tint Modes (controlled by TintOrder)
 
 ```
-  Normal blend mode:
+  POST_BLUR (default — matches Apple UIVisualEffectView):
   ┌──────────────────────────────┐
   │  BackdropView (blurred)      │
-  │    └── tintLayer             │  ← overlayColor drawn AFTER blur
+  │    └── tintLayer             │  ← tint drawn AFTER blur
   │         .backgroundColor     │
   │         .compositingFilter   │
   └──────────────────────────────┘
 
-  Non-Normal blend mode (e.g., ColorDodge):
+  PRE_BLUR (opt-in — softer diffused look):
   ┌──────────────────────────────┐
   │  Pre-blend BackdropView      │  ← 2nd extracted backdrop
   │    .filters = [blur(r=0)]    │     (captures raw, no blur)
@@ -403,12 +402,12 @@ Falls through to Kawase pipeline (Section 2.1+) when:
   │                     │ FrameLayout          │ (windowLevel + 1)    │
   │                     │ (excludedView)       │ (opaque = false)     │
   ├─────────────────────┼──────────────────────┼──────────────────────┤
-  │ Tint (Normal)       │ canvas.drawColor()   │ tintLayer on top of  │
+  │ Tint (POST_BLUR)    │ drawTint(canvas)     │ tintLayer on top of  │
   │                     │ after blur draw      │ backdrop sublayer    │
   ├─────────────────────┼──────────────────────┼──────────────────────┤
-  │ Tint (non-Normal)   │ Canvas.drawRect()    │ 2nd BackdropView     │
-  │                     │ with BlendMode       │ with compositingFilter│
-  │                     │ BEFORE blur          │ BEFORE main blur     │
+  │ Tint (PRE_BLUR)     │ applyTint(bitmap)    │ 2nd BackdropView     │
+  │                     │ before blur pass     │ with compositingFilter│
+  │                     │                      │ before main blur     │
   ├─────────────────────┼──────────────────────┼──────────────────────┤
   │ Alpha control       │ view.alpha on        │ container.setAlpha() │
   │                     │ BlurView + fade-     │ on blur container    │
@@ -457,10 +456,10 @@ Falls through to Kawase pipeline (Section 2.1+) when:
                  ┌───────────────┐           │
                  │BlurController │           │
                  │ .capture()    │           │
-                 │ .preBlurTint()│           │
                  │ .blur()       │           │
                  │ .draw()       │           │
+                 │  + drawTint() │           │
                  └───────────────┘           │
 ```
 
-The key takeaway: iOS gets blur "for free" at the GPU compositor level via private API extraction from `UIVisualEffectView`, while Android manually implements the full capture→blur→render pipeline using software canvas capture and OpenGL ES 2.0 Dual Kawase shaders, with careful dirty-flag management to avoid freezing Compose animations during alpha transitions.
+The key takeaway: iOS gets blur "for free" at the GPU compositor level via private API extraction from `UIVisualEffectView`, while Android implements the full capture→blur→render pipeline using SurfaceTexture GPU capture (API 26+) or software canvas fallback, OpenGL ES 2.0 Dual Kawase shaders with shared downsample chain optimization, and two-flag dirty tracking (`configDirty`/`contentDirty`) to avoid redundant work. Tint order (`TintOrder.POST_BLUR`/`PRE_BLUR`) is configurable on both platforms, defaulting to post-blur (industry standard, matching Apple's UIVisualEffectView).
