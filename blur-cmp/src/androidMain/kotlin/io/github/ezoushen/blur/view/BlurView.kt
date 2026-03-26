@@ -47,11 +47,19 @@ import io.github.ezoushen.blur.capture.DecorViewCapture
  *
  * @see BlurConfig
  */
-class BlurView @JvmOverloads constructor(
+class BlurView private constructor(
     context: Context,
-    attrs: AttributeSet? = null,
-    defStyleAttr: Int = 0
+    attrs: AttributeSet?,
+    defStyleAttr: Int,
+    private val useRenderNode: Boolean,
 ) : FrameLayout(context, attrs, defStyleAttr) {
+
+    @JvmOverloads
+    constructor(
+        context: Context,
+        attrs: AttributeSet? = null,
+        defStyleAttr: Int = 0,
+    ) : this(context, attrs, defStyleAttr, Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
 
     private var blurConfig: BlurConfig = BlurConfig.Default
     private var isBlurEnabled: Boolean = true
@@ -60,7 +68,16 @@ class BlurView @JvmOverloads constructor(
 
     private var blurController: BlurController? = null
     private var renderNodeController: RenderNodeBlurController? = null
-    private val useRenderNode = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+
+    companion object {
+        /**
+         * Creates a BlurView that uses the Kawase/OpenGL pipeline regardless
+         * of API level. For backdrop blur where the RenderNode path's
+         * `syncAndDraw` blocks the main thread on complex view hierarchies.
+         */
+        fun kawase(context: Context): BlurView =
+            BlurView(context, null, 0, useRenderNode = false)
+    }
     private var decorView: View? = null
 
     // For tracking rendering state to prevent infinite recursion

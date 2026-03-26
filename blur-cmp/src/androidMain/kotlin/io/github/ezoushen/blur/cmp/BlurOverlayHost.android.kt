@@ -106,8 +106,14 @@ actual fun BlurOverlayHost(
 
                 ContentOverlay(blurView = blurView, content = content)
             } else {
+                val isBackdropMode = background === EmptyBackground
                 val context = LocalContext.current
-                val blurView = remember { BlurView(context) }
+                val blurView = remember {
+                    // Backdrop blur captures the DecorView every frame. The
+                    // RenderNode path's syncAndDraw blocks the main thread for
+                    // seconds on complex hierarchies — use Kawase instead.
+                    if (isBackdropMode) BlurView.kawase(context) else BlurView(context)
+                }
 
                 DisposableEffect(Unit) {
                     onDispose { blurView.setIsLive(false) }
