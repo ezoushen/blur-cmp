@@ -3,21 +3,18 @@ package io.github.ezoushen.blur.cmp
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.window.ComposeUIViewController
+import androidx.compose.ui.viewinterop.UIKitInteropInteractionMode
+import androidx.compose.ui.viewinterop.UIKitInteropProperties
+import androidx.compose.ui.viewinterop.UIKitView
 import kotlinx.cinterop.BetaInteropApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.Foundation.NSStringFromClass
 import platform.Foundation.setValue
 import platform.QuartzCore.CALayer
 import platform.QuartzCore.CATransaction
-import platform.UIKit.UIApplication
 import platform.UIKit.UIBlurEffect
 import platform.UIKit.UIBlurEffectStyle
 import platform.UIKit.UIColor
@@ -25,18 +22,20 @@ import platform.UIKit.UIView
 import platform.UIKit.UIViewAutoresizingFlexibleHeight
 import platform.UIKit.UIViewAutoresizingFlexibleWidth
 import platform.UIKit.UIVisualEffectView
-import platform.UIKit.UIWindow
-import platform.UIKit.UIWindowLevelNormal
-import platform.UIKit.UIWindowScene
 import platform.objc.object_getClass
 
 /**
  * iOS BlurOverlayHost using native CABackdropLayer.
  *
  * Architecture:
- *   CMP MetalView (renders background)
- *     -> captured by Blur overlay (CABackdropLayer on rootVC view)
- *     -> content on top via Content UIWindow (ComposeUIViewController, opaque=false)
+ *   Box {
+ *     background()            — rendered by Compose (Metal)
+ *     UIKitView(blur layer)   — native CABackdropLayer captures Metal content below
+ *     content()               — rendered by Compose on top of blur
+ *   }
+ *
+ * All content stays in the same composition tree, preserving CompositionLocals,
+ * resource bundles, and DI context.
  */
 @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
@@ -46,8 +45,6 @@ actual fun BlurOverlayHost(
     background: @Composable () -> Unit,
     content: @Composable () -> Unit,
 ) {
-    val config = state.config
-
     if (!state.isEnabled) {
         Box(modifier = modifier) {
             background()
@@ -58,48 +55,8 @@ actual fun BlurOverlayHost(
 
     val blurState = remember { IosBlurState() }
 
-    val contentHolder = remember { ContentHolder() }
-    contentHolder.content = content
-
-    // Setup blur overlay and content window.
-    // No dispatch_async — CMP iOS already runs on the main thread.
-    // Synchronous setup eliminates the race condition where cleanup fires
-    // before the async block executes.
-    DisposableEffect(Unit) {
-        val windowScene = findActiveWindowScene()
-        val rootView = windowScene?.keyWindow?.rootViewController?.view
-
-        if (rootView != null && windowScene != null) {
-            blurState.setupInView(rootView, config)
-
-            val contentWindow = UIWindow(windowScene = windowScene)
-            contentWindow.windowLevel = UIWindowLevelNormal + 1.0
-            contentWindow.backgroundColor = UIColor.clearColor
-            contentWindow.setOpaque(false)
-
-            val contentVC = ComposeUIViewController(
-                configure = { opaque = false }
-            ) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    contentHolder.content()
-                }
-            }
-            contentVC.view.backgroundColor = UIColor.clearColor
-            contentVC.view.setOpaque(false)
-
-            contentWindow.rootViewController = contentVC
-            contentWindow.makeKeyAndVisible()
-
-            blurState.contentWindow = contentWindow
-        }
-
-        onDispose {
-            blurState.cleanup()
-        }
-    }
-
-    LaunchedEffect(config) {
-        blurState.applyConfig(config)
+    LaunchedEffect(state.config) {
+        blurState.applyConfig(state.config)
     }
 
     LaunchedEffect(state.alpha) {
@@ -108,30 +65,28 @@ actual fun BlurOverlayHost(
 
     Box(modifier = modifier) {
         background()
-    }
-}
 
-/**
- * Find the active UIWindowScene via connectedScenes (iOS 13+ compatible).
- * Avoids the deprecated UIApplication.keyWindow API.
- */
-@OptIn(ExperimentalForeignApi::class)
-private fun findActiveWindowScene(): UIWindowScene? {
-    val scenes = UIApplication.sharedApplication.connectedScenes
-    for (scene in scenes) {
-        val windowScene = scene as? UIWindowScene ?: continue
-        if (windowScene.keyWindow != null) return windowScene
-    }
-    return null
-}
+        UIKitView(
+            factory = {
+                blurState.createContainer(state.config)
+            },
+            modifier = Modifier.fillMaxSize(),
+            update = { _ ->
+                blurState.applyConfig(state.config)
+                blurState.applyAlpha(state.alpha)
+            },
+            properties = UIKitInteropProperties(
+                interactionMode = UIKitInteropInteractionMode.NonCooperative,
+                isNativeAccessibilityEnabled = false,
+            ),
+        )
 
-private class ContentHolder {
-    var content: @Composable () -> Unit by mutableStateOf({})
+        content()
+    }
 }
 
 /**
  * Manages the native iOS blur layer hierarchy.
- * All properties are private to prevent external mutation.
  */
 @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
 internal class IosBlurState {
@@ -143,24 +98,14 @@ internal class IosBlurState {
     private val maskCache = IosGradientMaskCache()
     private var isBeforeBlurActive = false
 
-    var contentWindow: UIWindow? = null
-
-    fun applyAlpha(alpha: Float) {
-        container?.setAlpha(alpha.toDouble())
-    }
-
-    fun setupInView(parentView: UIView, initialConfig: BlurOverlayConfig) {
-        val cont = UIView(frame = parentView.bounds)
+    fun createContainer(initialConfig: BlurOverlayConfig): UIView {
+        val cont = UIView()
         cont.backgroundColor = UIColor.clearColor
         cont.setOpaque(false)
         cont.setUserInteractionEnabled(false)
-        cont.setAutoresizingMask(
-            UIViewAutoresizingFlexibleWidth or UIViewAutoresizingFlexibleHeight
-        )
 
         val backdropView = extractBackdropView()
         if (backdropView != null) {
-            backdropView.setFrame(cont.bounds)
             backdropView.setAutoresizingMask(
                 UIViewAutoresizingFlexibleWidth or UIViewAutoresizingFlexibleHeight
             )
@@ -168,15 +113,17 @@ internal class IosBlurState {
             backdropLayer = backdropView.layer
 
             val tint = CALayer()
-            tint.setFrame(cont.layer.bounds)
             cont.layer.addSublayer(tint)
             tintLayer = tint
         }
 
-        parentView.addSubview(cont)
         container = cont
-
         applyConfig(initialConfig)
+        return cont
+    }
+
+    fun applyAlpha(alpha: Float) {
+        container?.setAlpha(alpha.toDouble())
     }
 
     private fun extractBackdropView(): UIView? {
@@ -200,6 +147,13 @@ internal class IosBlurState {
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+
+        // Resize layers to match container
+        val bounds = container?.layer?.bounds
+        if (bounds != null) {
+            backdrop.superview?.setFrame(bounds)
+            tintLayer?.setFrame(bounds)
+        }
 
         val gradient = config.gradient
         if (gradient != null && IosBackdropLayerProvider.isValidForVariableBlur) {
@@ -257,10 +211,7 @@ internal class IosBlurState {
 
     private fun setupPreBlend() {
         val cont = container ?: return
-        // Extract a second backdrop view for the pre-blend layer (beforeBlur mode).
-        // This creates a temporary UIVisualEffectView — minor setup cost, not per-frame.
         val preBlendView = extractBackdropView() ?: return
-        preBlendView.setFrame(cont.bounds)
         preBlendView.setAutoresizingMask(
             UIViewAutoresizingFlexibleWidth or UIViewAutoresizingFlexibleHeight
         )
@@ -271,7 +222,6 @@ internal class IosBlurState {
             preBlendView.layer.setValue(arr, forKey = "filters")
         }
         val tint = CALayer()
-        tint.setFrame(cont.layer.bounds)
         preBlendView.layer.addSublayer(tint)
         cont.insertSubview(preBlendView, atIndex = 0)
         preBlendBackdropView = preBlendView
@@ -296,17 +246,8 @@ internal class IosBlurState {
             alpha = ((v ushr 24) and 0xFF) / 255.0,
         )
     }
-
-    fun cleanup() {
-        maskCache.release()
-        teardownPreBlend()
-        container?.removeFromSuperview()
-        container = null
-        backdropLayer = null
-        tintLayer = null
-        // Properly dispose the content window and its ComposeUIViewController
-        contentWindow?.rootViewController = null
-        contentWindow?.setHidden(true)
-        contentWindow = null
-    }
 }
+
+private val CALayer.superview: UIView?
+    @OptIn(ExperimentalForeignApi::class)
+    get() = delegate as? UIView
