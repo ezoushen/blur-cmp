@@ -48,7 +48,7 @@ actual fun BlurOverlayHost(
 ) {
     val config = state.config
 
-    if (!state.isEnabled || config.radius <= 0f) {
+    if (!state.isEnabled) {
         Box(modifier = modifier) {
             background()
             content()
