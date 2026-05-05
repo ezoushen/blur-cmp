@@ -55,7 +55,16 @@ actual fun BlurOverlayHost(
     Box(modifier = modifier) {
         background()
 
-        if (state.isEnabled && config.radius > 0f) {
+        // Mount the BlurView as soon as the overlay is enabled, even when
+        // the radius is still zero or sub-pixel (the start of an enter
+        // animation). This pays the EGL/shader/FBO cold-init cost on a
+        // frame where the blur is invisible behind the dim scrim, so the
+        // visible 0→target radius animation runs against a warm GL
+        // context. Previously the BlurView only mounted once radius>0,
+        // causing the *first visible* blur frame to also be the cold-init
+        // frame — a 200–280 ms UI-thread stall that visually freezes the
+        // dialog at "no blur" then snaps to "fully blurred".
+        if (state.isEnabled) {
             // Tier 1: API 31+ uniform blur (any blend mode) — only when the caller
             // provides an explicit background composable. BlurOverlay passes
             // background = {} (empty) because it blurs the DecorView behind it,
@@ -104,6 +113,12 @@ actual fun BlurOverlayHost(
                     prevAlpha = state.alpha
                 }
 
+                // Honor BlurOverlayState.requestUpdate() in non-live mode:
+                // increment of updateTrigger forces a one-shot recapture.
+                LaunchedEffect(state.updateTrigger) {
+                    blurView.requestSingleUpdate()
+                }
+
                 ContentOverlay(blurView = blurView, content = content)
             } else {
                 val isBackdropMode = background === EmptyBackground
@@ -133,6 +148,10 @@ actual fun BlurOverlayHost(
                     blurView.alpha = state.alpha
                     blurView.setIsLive(config.isLive && state.alpha > 0f && !fadingOut)
                     prevAlpha = state.alpha
+                }
+
+                LaunchedEffect(state.updateTrigger) {
+                    blurView.requestSingleUpdate()
                 }
 
                 ContentOverlay(blurView = blurView, content = content)

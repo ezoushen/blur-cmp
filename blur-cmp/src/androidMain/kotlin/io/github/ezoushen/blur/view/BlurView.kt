@@ -330,6 +330,18 @@ class BlurView private constructor(
      */
     fun isLive(): Boolean = isLive
 
+    /**
+     * Request a single recapture+blur on the next frame regardless of the
+     * isLive flag. Used by non-live (one-shot) consumers — e.g. dialog
+     * overlays that capture once on enter and then composite the cached
+     * blur for the lifetime of the dialog.
+     */
+    fun requestSingleUpdate() {
+        blurController?.markContentDirty()
+        renderNodeController?.invalidate()
+        invalidate()
+    }
+
     // Pending excluded views (stored until controller is ready)
     private val pendingExcludedViews = mutableListOf<View>()
 
@@ -431,13 +443,22 @@ class BlurView private constructor(
                 flushPendingExcludedViews()
             }
 
-            // Add pre-draw listener to update blur before each frame
-            decorView?.viewTreeObserver?.addOnPreDrawListener(preDrawListener)
+            // Drive blur updates from the BlurView's own VTO rather than the
+            // source view's. Backdrop blur is typically hosted in a separate
+            // Window (Dialog/Popup); the Activity decor's ViewTreeObserver
+            // does not dispatch preDraws when the Activity itself is
+            // quiescent, which left blur frozen after HOME→resume cycles
+            // (decor stays attached but emits no preDraws once Compose
+            // settles). The local VTO ticks whenever this BlurView's host
+            // window draws — which is every frame during animations and
+            // on-demand otherwise — and DecorViewCapture re-snapshots the
+            // source synchronously each tick, so live capture stays correct.
+            viewTreeObserver?.addOnPreDrawListener(preDrawListener)
         }
     }
 
     override fun onDetachedFromWindow() {
-        decorView?.viewTreeObserver?.removeOnPreDrawListener(preDrawListener)
+        viewTreeObserver?.removeOnPreDrawListener(preDrawListener)
         hasFirstFrame = false
 
         blurController?.setOutputSurface(null)

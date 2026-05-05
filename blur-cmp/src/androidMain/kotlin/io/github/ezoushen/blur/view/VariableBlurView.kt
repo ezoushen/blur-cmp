@@ -325,6 +325,15 @@ class VariableBlurView @JvmOverloads constructor(
     fun isLive(): Boolean = isLive
 
     /**
+     * Request a single recapture+blur on the next frame regardless of the
+     * isLive flag.
+     */
+    fun requestSingleUpdate() {
+        blurController?.markContentDirty()
+        invalidate()
+    }
+
+    /**
      * Register a view to exclude from blur capture.
      */
     private val pendingExcludedViews = mutableListOf<View>()

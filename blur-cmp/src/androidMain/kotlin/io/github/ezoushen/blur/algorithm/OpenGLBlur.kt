@@ -119,11 +119,15 @@ class OpenGLBlur : BlurAlgorithm {
                 if (!initEGL()) return false
                 if (!initShaders()) return false
                 isInitialized = true
-                // Create deferred window surface if setSurface was called before EGL init
-                val pending = pendingSurface
-                if (pending != null && pending.isValid && windowSurface == null) {
-                    createWindowSurface(pending)
-                }
+            }
+
+            // Bind a pending output Surface whenever one is queued and not yet
+            // bound. Runs every prepare() (not just first init) so that a
+            // late-arriving Surface from TextureView re-attach is honored
+            // without requiring a dimension change.
+            val pending = pendingSurface
+            if (pending != null && pending.isValid && windowSurface == null) {
+                createWindowSurface(pending)
             }
 
             if (lastWidth != width || lastHeight != height) {
@@ -155,12 +159,12 @@ class OpenGLBlur : BlurAlgorithm {
         if (radius <= 0 || !isInitialized) {
             if (hasOutputSurface()) {
                 try {
-                    EGL14.eglMakeCurrent(eglDisplay, windowSurface, windowSurface, eglContext)
+                    if (!makeCurrentOn(windowSurface)) return output
                     GLES20.glClearColor(0f, 0f, 0f, 0f)
                     GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
                     EGL14.eglSwapBuffers(eglDisplay, windowSurface)
                 } finally {
-                    EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
+                    makeCurrentOn(eglSurface)
                 }
                 return output
             }
@@ -171,7 +175,7 @@ class OpenGLBlur : BlurAlgorithm {
         }
 
         try {
-            makeCurrent()
+            if (!makeCurrent()) return input  // context lost; let next prepare() re-init
 
             val params = calculateBlurParams(radius)
 
@@ -209,7 +213,7 @@ class OpenGLBlur : BlurAlgorithm {
                 try {
                     EGL14.eglSwapBuffers(eglDisplay, windowSurface)
                 } finally {
-                    EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
+                    makeCurrentOn(eglSurface)
                 }
                 return output
             }
@@ -285,7 +289,7 @@ class OpenGLBlur : BlurAlgorithm {
             if (i == 0 && renderToWindowSurface) {
                 // Last pass: render directly to window surface's default FBO.
                 // Viewport must match TextureView size so blur upscales to fill.
-                EGL14.eglMakeCurrent(eglDisplay, windowSurface, windowSurface, eglContext)
+                if (!makeCurrentOn(windowSurface)) return
                 GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
                 val vw = if (surfaceWidth > 0) surfaceWidth else targetWidth
                 val vh = if (surfaceHeight > 0) surfaceHeight else targetHeight
@@ -346,28 +350,30 @@ class OpenGLBlur : BlurAlgorithm {
         val version = IntArray(2)
         if (!EGL14.eglInitialize(eglDisplay, version, 0, version, 1)) return false
 
-        val configAttribs = intArrayOf(
-            EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
-            EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT or EGL14.EGL_WINDOW_BIT,
-            EGL14.EGL_RED_SIZE, 8,
-            EGL14.EGL_GREEN_SIZE, 8,
-            EGL14.EGL_BLUE_SIZE, 8,
-            EGL14.EGL_ALPHA_SIZE, 8,
-            EGL14.EGL_NONE
-        )
-
         val configs = arrayOfNulls<EGLConfig>(1)
         val numConfigs = IntArray(1)
-        if (!EGL14.eglChooseConfig(eglDisplay, configAttribs, 0, configs, 0, 1, numConfigs, 0)) {
+        if (!EGL14.eglChooseConfig(
+                eglDisplay,
+                OpenGLBlurShaders.EGL_CONFIG_ATTRIBS,
+                0,
+                configs,
+                0,
+                1,
+                numConfigs,
+                0,
+            )
+        ) {
             return false
         }
         eglConfig = configs[0] ?: return false
 
-        val contextAttribs = intArrayOf(
-            EGL14.EGL_CONTEXT_CLIENT_VERSION, 2,
-            EGL14.EGL_NONE
+        eglContext = EGL14.eglCreateContext(
+            eglDisplay,
+            eglConfig,
+            EGL14.EGL_NO_CONTEXT,
+            OpenGLBlurShaders.EGL_CONTEXT_ATTRIBS,
+            0,
         )
-        eglContext = EGL14.eglCreateContext(eglDisplay, eglConfig, EGL14.EGL_NO_CONTEXT, contextAttribs, 0)
         if (eglContext == EGL14.EGL_NO_CONTEXT) return false
 
         val surfaceAttribs = intArrayOf(
@@ -382,7 +388,72 @@ class OpenGLBlur : BlurAlgorithm {
     }
 
     private fun makeCurrent(): Boolean {
-        return EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
+        return makeCurrentOn(eglSurface)
+    }
+
+    /**
+     * eglMakeCurrent with EGL_CONTEXT_LOST detection.
+     *
+     * The OS may reset the GPU context across Activity background→resume
+     * (low-memory eviction, driver reset, display power transitions). When
+     * that happens eglMakeCurrent returns EGL_FALSE with eglGetError() ==
+     * EGL_CONTEXT_LOST. All shaders, textures, FBOs and the EGL context
+     * itself become invalid. Without recovery the next blur draw runs
+     * against zombie state and produces no visible output.
+     *
+     * On loss we mark every GL handle stale (not freed — handles point at
+     * dead driver objects) and clear `isInitialized` so the next prepare()
+     * runs initEGL/initShaders/initFramebuffers fresh. The pending output
+     * Surface is preserved across recovery so the new EGL surface rebinds
+     * automatically.
+     */
+    private fun makeCurrentOn(surface: EGLSurface?): Boolean {
+        val display = eglDisplay ?: return false
+        val ctx = eglContext ?: return false
+        if (surface == null || surface == EGL14.EGL_NO_SURFACE) return false
+        val ok = EGL14.eglMakeCurrent(display, surface, surface, ctx)
+        if (!ok) {
+            val err = EGL14.eglGetError()
+            if (err == EGL14.EGL_CONTEXT_LOST) {
+                recoverFromContextLoss()
+            }
+        }
+        return ok
+    }
+
+    private fun recoverFromContextLoss() {
+        // Preserve output Surface metadata; everything else is dead.
+        val savedPending = pendingSurface
+        val sw = surfaceWidth
+        val sh = surfaceHeight
+
+        framebuffers = null
+        textures = null
+        inputTexture = 0
+        externalInputTexture = 0
+        currentEglImage = null
+        downsampleProgram = 0
+        downsampleExternalProgram = 0
+        upsampleProgram = 0
+
+        // EGL handles point at dead driver state. Do not call eglDestroy*
+        // — driver may already have torn them down. Just drop references.
+        windowSurface = null
+        eglSurface = null
+        eglContext = null
+        eglDisplay = null
+        eglConfig = null
+
+        outputBitmap?.recycle()
+        outputBitmap = null
+
+        isInitialized = false
+        lastWidth = 0
+        lastHeight = 0
+
+        pendingSurface = savedPending
+        surfaceWidth = sw
+        surfaceHeight = sh
     }
 
     /**
@@ -510,14 +581,23 @@ class OpenGLBlur : BlurAlgorithm {
     }
 
     private fun initShaders(): Boolean {
-        downsampleProgram = createProgram(VERTEX_SHADER, DOWNSAMPLE_FRAGMENT_SHADER)
+        downsampleProgram = createProgram(
+            OpenGLBlurShaders.VERTEX_SHADER,
+            OpenGLBlurShaders.DOWNSAMPLE_FRAGMENT_SHADER,
+        )
         if (downsampleProgram == 0) return false
 
-        upsampleProgram = createProgram(VERTEX_SHADER, UPSAMPLE_FRAGMENT_SHADER)
+        upsampleProgram = createProgram(
+            OpenGLBlurShaders.VERTEX_SHADER,
+            OpenGLBlurShaders.UPSAMPLE_FRAGMENT_SHADER,
+        )
         if (upsampleProgram == 0) return false
 
         // External OES downsample shader — allow failure if extension not supported
-        downsampleExternalProgram = createProgram(VERTEX_SHADER, DOWNSAMPLE_EXTERNAL_FRAGMENT_SHADER)
+        downsampleExternalProgram = createProgram(
+            OpenGLBlurShaders.VERTEX_SHADER,
+            OpenGLBlurShaders.DOWNSAMPLE_EXTERNAL_FRAGMENT_SHADER,
+        )
 
         return true
     }
@@ -741,69 +821,6 @@ class OpenGLBlur : BlurAlgorithm {
             0f, 0f,
             1f, 0f
         )
-
-        private const val VERTEX_SHADER = """
-            attribute vec2 aPosition;
-            attribute vec2 aTexCoord;
-            varying vec2 vTexCoord;
-            void main() {
-                gl_Position = vec4(aPosition, 0.0, 1.0);
-                vTexCoord = aTexCoord;
-            }
-        """
-
-        /**
-         * Downsample fragment shader for GL_TEXTURE_EXTERNAL_OES input (SurfaceTexture).
-         * Uses samplerExternalOES instead of sampler2D. Only used for the first downsample pass.
-         */
-        private const val DOWNSAMPLE_EXTERNAL_FRAGMENT_SHADER = """
-            #extension GL_OES_EGL_image_external : require
-            precision mediump float;
-            uniform samplerExternalOES uTexture;
-            uniform vec2 uHalfPixel;
-            varying vec2 vTexCoord;
-            void main() {
-                vec4 sum = texture2D(uTexture, vTexCoord) * 4.0;
-                sum += texture2D(uTexture, vTexCoord - uHalfPixel);
-                sum += texture2D(uTexture, vTexCoord + uHalfPixel);
-                sum += texture2D(uTexture, vTexCoord + vec2(uHalfPixel.x, -uHalfPixel.y));
-                sum += texture2D(uTexture, vTexCoord - vec2(uHalfPixel.x, -uHalfPixel.y));
-                gl_FragColor = sum / 8.0;
-            }
-        """
-
-        private const val DOWNSAMPLE_FRAGMENT_SHADER = """
-            precision mediump float;
-            uniform sampler2D uTexture;
-            uniform vec2 uHalfPixel;
-            varying vec2 vTexCoord;
-            void main() {
-                vec4 sum = texture2D(uTexture, vTexCoord) * 4.0;
-                sum += texture2D(uTexture, vTexCoord - uHalfPixel);
-                sum += texture2D(uTexture, vTexCoord + uHalfPixel);
-                sum += texture2D(uTexture, vTexCoord + vec2(uHalfPixel.x, -uHalfPixel.y));
-                sum += texture2D(uTexture, vTexCoord - vec2(uHalfPixel.x, -uHalfPixel.y));
-                gl_FragColor = sum / 8.0;
-            }
-        """
-
-        private const val UPSAMPLE_FRAGMENT_SHADER = """
-            precision mediump float;
-            uniform sampler2D uTexture;
-            uniform vec2 uHalfPixel;
-            varying vec2 vTexCoord;
-            void main() {
-                vec4 sum = texture2D(uTexture, vTexCoord + vec2(-uHalfPixel.x * 2.0, 0.0));
-                sum += texture2D(uTexture, vTexCoord + vec2(-uHalfPixel.x, uHalfPixel.y)) * 2.0;
-                sum += texture2D(uTexture, vTexCoord + vec2(0.0, uHalfPixel.y * 2.0));
-                sum += texture2D(uTexture, vTexCoord + vec2(uHalfPixel.x, uHalfPixel.y)) * 2.0;
-                sum += texture2D(uTexture, vTexCoord + vec2(uHalfPixel.x * 2.0, 0.0));
-                sum += texture2D(uTexture, vTexCoord + vec2(uHalfPixel.x, -uHalfPixel.y)) * 2.0;
-                sum += texture2D(uTexture, vTexCoord + vec2(0.0, -uHalfPixel.y * 2.0));
-                sum += texture2D(uTexture, vTexCoord + vec2(-uHalfPixel.x, -uHalfPixel.y)) * 2.0;
-                gl_FragColor = sum / 12.0;
-            }
-        """
 
     }
 }

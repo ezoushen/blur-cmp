@@ -51,6 +51,11 @@ class BlurController(
         /** Radius at which the full configured downsample factor is reached.
          *  Below this, downsample ramps linearly from 1.0 to avoid pixelation. */
         private const val FULL_DOWNSAMPLE_RADIUS = 16f
+
+        /** Below this radius the blur is sub-pixel-visible. We use this as
+         *  the threshold for the warmup path that pre-inits the GL pipeline
+         *  without running per-frame capture/blur. */
+        private const val SUBPIXEL_RADIUS = 1f
     }
 
     private val bitmapPool = BitmapPool(maxPoolSize = 4)
@@ -210,6 +215,27 @@ class BlurController(
         if (dimensionsChanged) contentDirty = true
 
         if (!configDirty && !contentDirty) {
+            return false
+        }
+
+        // Sub-pixel-radius warmup path: when the BlurView is mounted with
+        // an effectively-invisible radius (typical at the start of a fade-in
+        // animation, radius animating 0→target), pre-initialize the GL
+        // pipeline against the *target* downsample factor and then return
+        // without running the expensive capture/blur passes. This pays the
+        // EGL / shader / FBO cold-init cost on a frame where blur is
+        // invisible, so the first visible blur frame doesn't compound
+        // cold-init with capture+blur work on the same UI tick.
+        if (config.radius < SUBPIXEL_RADIUS) {
+            val warmupDownsample = config.downsampleFactor
+            val warmupWidth = (view.width / warmupDownsample).toInt().coerceAtLeast(1)
+            val warmupHeight = (view.height / warmupDownsample).toInt().coerceAtLeast(1)
+            algorithm.prepare(context, warmupWidth, warmupHeight, 1f)
+            // Keep contentDirty true so the next non-zero-radius frame
+            // still triggers a fresh capture.
+            contentDirty = true
+            // Don't update lastWidth/Height; let the first real radius
+            // frame go through the full size-changed path.
             return false
         }
 
