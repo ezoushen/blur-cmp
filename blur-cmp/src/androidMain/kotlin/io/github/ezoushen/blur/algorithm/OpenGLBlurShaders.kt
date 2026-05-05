@@ -86,12 +86,47 @@ internal object OpenGLBlurShaders {
         """
 
     /**
+     * Bitmask value for `EGL_OPENGL_ES3_BIT_KHR` — exposed by EGL 1.5 core
+     * and by the `EGL_KHR_create_context` extension on EGL 1.4. Not
+     * defined as a constant in `android.opengl.EGL14`, so we hard-code
+     * the spec value here.
+     */
+    const val EGL_OPENGL_ES3_BIT_KHR: Int = 0x00000040
+
+    /**
      * EGL config attributes used by both runtime and prewarm contexts.
      * Driver may include the resolved EGL config in its blob-cache key,
      * so the two paths must request configs with the same renderable
      * type, surface flags, and channel sizes.
+     *
+     * The "preferred" config requests an ES3-capable surface so that the
+     * `glGetProgramBinary` / `glProgramBinary` calls used by
+     * [OpenGLBlurProgramBinaryCache] are accessible (they live in
+     * `GLES30` Java bindings and require an ES3 or higher context).
+     * If `eglChooseConfig` returns no match for ES3 the caller must fall
+     * back to [EGL_CONFIG_ATTRIBS_ES2] — the program-binary cache is
+     * disabled in that case but the runtime path still works.
      */
-    val EGL_CONFIG_ATTRIBS: IntArray = intArrayOf(
+    val EGL_CONFIG_ATTRIBS_ES3: IntArray = intArrayOf(
+        EGL14.EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT_KHR,
+        EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT or EGL14.EGL_WINDOW_BIT,
+        EGL14.EGL_RED_SIZE, 8,
+        EGL14.EGL_GREEN_SIZE, 8,
+        EGL14.EGL_BLUE_SIZE, 8,
+        EGL14.EGL_ALPHA_SIZE, 8,
+        EGL14.EGL_NONE,
+    )
+
+    val EGL_CONTEXT_ATTRIBS_ES3: IntArray = intArrayOf(
+        EGL14.EGL_CONTEXT_CLIENT_VERSION, 3,
+        EGL14.EGL_NONE,
+    )
+
+    /**
+     * Legacy ES2 fallback. Used only on devices without ES3 support; the
+     * binary cache is unavailable on this path.
+     */
+    val EGL_CONFIG_ATTRIBS_ES2: IntArray = intArrayOf(
         EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
         EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT or EGL14.EGL_WINDOW_BIT,
         EGL14.EGL_RED_SIZE, 8,
@@ -101,8 +136,18 @@ internal object OpenGLBlurShaders {
         EGL14.EGL_NONE,
     )
 
-    val EGL_CONTEXT_ATTRIBS: IntArray = intArrayOf(
+    val EGL_CONTEXT_ATTRIBS_ES2: IntArray = intArrayOf(
         EGL14.EGL_CONTEXT_CLIENT_VERSION, 2,
         EGL14.EGL_NONE,
     )
+
+    // Backward-compat aliases — keep external references working until
+    // the codebase migrates to the explicit ES2/ES3 names.
+    @Deprecated("Use EGL_CONFIG_ATTRIBS_ES3 / EGL_CONFIG_ATTRIBS_ES2 explicitly.")
+    val EGL_CONFIG_ATTRIBS: IntArray
+        get() = EGL_CONFIG_ATTRIBS_ES2
+
+    @Deprecated("Use EGL_CONTEXT_ATTRIBS_ES3 / EGL_CONTEXT_ATTRIBS_ES2 explicitly.")
+    val EGL_CONTEXT_ATTRIBS: IntArray
+        get() = EGL_CONTEXT_ATTRIBS_ES2
 }

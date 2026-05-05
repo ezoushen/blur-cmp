@@ -1,18 +1,12 @@
 package io.github.ezoushen.blur.cmp
 
 import android.content.Context
-import android.opengl.EGL14
-import android.opengl.EGLConfig
-import android.opengl.EGLContext
-import android.opengl.EGLDisplay
-import android.opengl.EGLSurface
-import android.opengl.GLES20
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.os.Process
 import android.util.Log
-import io.github.ezoushen.blur.algorithm.OpenGLBlurShaders
+import io.github.ezoushen.blur.algorithm.OpenGLBlur
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -106,12 +100,12 @@ object BlurOverlayPrewarm {
         mainHandler.postDelayed(launchWorker, FALLBACK_DELAY_MS)
     }
 
-    private fun startWorker(@Suppress("UNUSED_PARAMETER") appContext: Context) {
+    private fun startWorker(appContext: Context) {
         val thread = HandlerThread(THREAD_NAME, Process.THREAD_PRIORITY_BACKGROUND)
         thread.start()
         Handler(thread.looper).post {
             val outcome = try {
-                runWarmup()
+                runWarmup(appContext)
             } catch (t: Throwable) {
                 Log.w(TAG, "prewarm worker threw", t)
                 State.FAILED
@@ -122,180 +116,36 @@ object BlurOverlayPrewarm {
     }
 
     /**
-     * Runs entirely on the worker [HandlerThread]. Sets up an EGL context
-     * + pbuffer surface, validates that the device exposes blob-cache
-     * support, compiles + links the three blur programs, then tears down
-     * in reverse construction order. Driver retains the cached compiled
-     * shaders on disk regardless of program / context lifetime.
+     * Runs entirely on the worker [HandlerThread]. Instantiates a
+     * throwaway [OpenGLBlur] backed by `appContext` and drives it
+     * through `prepare()` so that the same cold-init sequence the
+     * runtime path takes — `eglCreateContext`, `glCompileShader`,
+     * `glLinkProgram`, FBO allocation — runs here on the background
+     * thread. The bonus: when [OpenGLBlur] succeeds in creating an ES3
+     * context and the driver advertises `GL_OES_get_program_binary`,
+     * each successful link writes its program binary to disk via
+     * [io.github.ezoushen.blur.algorithm.OpenGLBlurProgramBinaryCache]
+     * — which is the actual benefit on devices (e.g. Pixel 4a /
+     * Adreno 618) that do not auto-cache via `EGL_ANDROID_blob_cache`.
+     *
+     * On the next process launch the runtime path's `prepare()` finds
+     * the cached binaries, calls `glProgramBinary`, and skips the
+     * compile/link work entirely.
      */
-    private fun runWarmup(): State {
-        var display: EGLDisplay? = null
-        var context: EGLContext? = null
-        var surface: EGLSurface? = null
-        var displayInitialized = false
-        val createdShaders = mutableListOf<Int>()
-        val createdPrograms = mutableListOf<Int>()
-        var madeCurrent = false
-
+    private fun runWarmup(appContext: Context): State {
+        val warmupAlgo = OpenGLBlur(appContext)
         try {
-            display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
-            if (display == null || display == EGL14.EGL_NO_DISPLAY) {
-                return State.FAILED
-            }
-            val version = IntArray(2)
-            if (!EGL14.eglInitialize(display, version, 0, version, 1)) {
-                return State.FAILED
-            }
-            displayInitialized = true
-
-            val configs = arrayOfNulls<EGLConfig>(1)
-            val numConfigs = IntArray(1)
-            if (!EGL14.eglChooseConfig(
-                    display,
-                    OpenGLBlurShaders.EGL_CONFIG_ATTRIBS,
-                    0,
-                    configs,
-                    0,
-                    1,
-                    numConfigs,
-                    0,
-                )
-            ) return State.FAILED
-            val config = configs[0] ?: return State.FAILED
-
-            context = EGL14.eglCreateContext(
-                display,
-                config,
-                EGL14.EGL_NO_CONTEXT,
-                OpenGLBlurShaders.EGL_CONTEXT_ATTRIBS,
-                0,
-            )
-            if (context == null || context == EGL14.EGL_NO_CONTEXT) return State.FAILED
-
-            val surfaceAttribs = intArrayOf(
-                EGL14.EGL_WIDTH, 1,
-                EGL14.EGL_HEIGHT, 1,
-                EGL14.EGL_NONE,
-            )
-            surface = EGL14.eglCreatePbufferSurface(display, config, surfaceAttribs, 0)
-            if (surface == null || surface == EGL14.EGL_NO_SURFACE) return State.FAILED
-
-            if (!EGL14.eglMakeCurrent(display, surface, surface, context)) return State.FAILED
-            madeCurrent = true
-
-            // Runtime gate: confirm the platform actually advertises a
-            // shader-binary blob cache before doing any compile work.
-            // Without it the prewarm has no observable benefit.
-            val eglExtensions = EGL14.eglQueryString(display, EGL14.EGL_EXTENSIONS).orEmpty()
-            if (!eglExtensions.contains("EGL_ANDROID_blob_cache")) {
-                Log.i(TAG, "EGL_ANDROID_blob_cache not advertised; skipping prewarm")
-                return State.FAILED
-            }
-
-            // Single-source-of-truth shader strings: same `String` constants
-            // both runtime and prewarm pass to glShaderSource, so the
-            // driver's source-hash key matches and the cache hits.
-            compileAndLink(
-                OpenGLBlurShaders.VERTEX_SHADER,
-                OpenGLBlurShaders.DOWNSAMPLE_FRAGMENT_SHADER,
-                createdShaders,
-                createdPrograms,
-            )
-            compileAndLink(
-                OpenGLBlurShaders.VERTEX_SHADER,
-                OpenGLBlurShaders.UPSAMPLE_FRAGMENT_SHADER,
-                createdShaders,
-                createdPrograms,
-            )
-            // Best-effort: external-OES path requires the
-            // GL_OES_EGL_image_external extension. If it's missing the
-            // compile fails silently; runtime falls back to the
-            // non-external downsample shader.
-            val glExtensions = GLES20.glGetString(GLES20.GL_EXTENSIONS).orEmpty()
-            if (glExtensions.contains("GL_OES_EGL_image_external")) {
-                compileAndLink(
-                    OpenGLBlurShaders.VERTEX_SHADER,
-                    OpenGLBlurShaders.DOWNSAMPLE_EXTERNAL_FRAGMENT_SHADER,
-                    createdShaders,
-                    createdPrograms,
-                )
-            }
-
-            return State.COMPLETED
+            // 1×1 dimensions are sufficient: shader compile + link cost
+            // is independent of FBO size, and the FBOs are recycled
+            // immediately on `release()`.
+            val ok = warmupAlgo.prepare(appContext, width = 1, height = 1, radius = 1f)
+            return if (ok) State.COMPLETED else State.FAILED
         } finally {
-            // Reverse-order cleanup: GL handles first (while context is
-            // current), then unbind context, then destroy surface +
-            // context, finally terminate display. Skipping any step
-            // could leak a current context onto a HandlerThread that's
-            // about to quit.
-            if (madeCurrent) {
-                for (program in createdPrograms) {
-                    if (program != 0) {
-                        try { GLES20.glDeleteProgram(program) } catch (_: Throwable) {}
-                    }
-                }
-                for (shader in createdShaders) {
-                    if (shader != 0) {
-                        try { GLES20.glDeleteShader(shader) } catch (_: Throwable) {}
-                    }
-                }
-                try {
-                    EGL14.eglMakeCurrent(
-                        display,
-                        EGL14.EGL_NO_SURFACE,
-                        EGL14.EGL_NO_SURFACE,
-                        EGL14.EGL_NO_CONTEXT,
-                    )
-                } catch (_: Throwable) {}
-            }
-            if (display != null && display != EGL14.EGL_NO_DISPLAY) {
-                if (surface != null && surface != EGL14.EGL_NO_SURFACE) {
-                    try { EGL14.eglDestroySurface(display, surface) } catch (_: Throwable) {}
-                }
-                if (context != null && context != EGL14.EGL_NO_CONTEXT) {
-                    try { EGL14.eglDestroyContext(display, context) } catch (_: Throwable) {}
-                }
-                if (displayInitialized) {
-                    try { EGL14.eglTerminate(display) } catch (_: Throwable) {}
-                }
+            try {
+                warmupAlgo.release()
+            } catch (t: Throwable) {
+                Log.w(TAG, "warmup release threw", t)
             }
         }
-    }
-
-    private fun compileAndLink(
-        vertexSource: String,
-        fragmentSource: String,
-        createdShaders: MutableList<Int>,
-        createdPrograms: MutableList<Int>,
-    ) {
-        val vs = GLES20.glCreateShader(GLES20.GL_VERTEX_SHADER)
-        if (vs == 0) return
-        createdShaders += vs
-        GLES20.glShaderSource(vs, vertexSource)
-        GLES20.glCompileShader(vs)
-        if (!shaderCompiled(vs)) return
-
-        val fs = GLES20.glCreateShader(GLES20.GL_FRAGMENT_SHADER)
-        if (fs == 0) return
-        createdShaders += fs
-        GLES20.glShaderSource(fs, fragmentSource)
-        GLES20.glCompileShader(fs)
-        if (!shaderCompiled(fs)) return
-
-        val program = GLES20.glCreateProgram()
-        if (program == 0) return
-        createdPrograms += program
-        GLES20.glAttachShader(program, vs)
-        GLES20.glAttachShader(program, fs)
-        GLES20.glLinkProgram(program)
-        // No need to check link status — even a failed link populates
-        // the driver's parse cache for the source strings, which is the
-        // value we want.
-    }
-
-    private fun shaderCompiled(shader: Int): Boolean {
-        val status = IntArray(1)
-        GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, status, 0)
-        return status[0] != 0
     }
 }

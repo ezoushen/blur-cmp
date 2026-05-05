@@ -22,7 +22,7 @@ object BlurAlgorithmFactory {
      * @return OpenGL Dual Kawase blur algorithm
      */
     @JvmOverloads
-    fun create(context: Context? = null): BlurAlgorithm = OpenGLBlur()
+    fun create(context: Context? = null): BlurAlgorithm = OpenGLBlur(context?.applicationContext)
 
     /**
      * Creates a specific blur algorithm by type.
@@ -33,7 +33,7 @@ object BlurAlgorithmFactory {
      */
     fun create(type: AlgorithmType): BlurAlgorithm {
         return when (type) {
-            AlgorithmType.OPENGL -> OpenGLBlur()
+            AlgorithmType.OPENGL -> OpenGLBlur(null)
             AlgorithmType.RENDER_EFFECT -> {
                 require(Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     "RenderEffect requires API 31+"

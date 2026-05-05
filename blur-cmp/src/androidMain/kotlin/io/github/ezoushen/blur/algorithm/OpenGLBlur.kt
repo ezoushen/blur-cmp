@@ -10,6 +10,7 @@ import android.opengl.EGLDisplay
 import android.opengl.EGLSurface
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
+import android.opengl.GLES30
 import android.os.Build
 import androidx.annotation.RequiresApi
 import androidx.opengl.EGLExt
@@ -49,7 +50,18 @@ private data class BlurParams(
  * Supported API: 23+ (minSdk)
  * Max blur radius: Unlimited (controlled by iteration count)
  */
-class OpenGLBlur : BlurAlgorithm {
+class OpenGLBlur @JvmOverloads constructor(
+    /**
+     * Optional application context. When provided, [OpenGLBlur] uses
+     * [OpenGLBlurProgramBinaryCache] to skip `glCompileShader` /
+     * `glLinkProgram` on subsequent process launches by loading a cached
+     * program binary via `glProgramBinary`. The cache is silently
+     * disabled when the context is null, when the device cannot create
+     * an ES3 context (the program-binary API requires it), or when the
+     * driver does not advertise `GL_OES_get_program_binary`.
+     */
+    private val appContext: Context? = null,
+) : BlurAlgorithm {
 
     private var eglDisplay: EGLDisplay? = null
     private var eglContext: EGLContext? = null
@@ -58,6 +70,18 @@ class OpenGLBlur : BlurAlgorithm {
     private var windowSurface: EGLSurface? = null
     private var pendingSurface: android.view.Surface? = null
     private var surfaceWidth: Int = 0
+    /**
+     * True when [initEGL] succeeded with an ES3 context. Required for
+     * the program-binary cache: `glGetProgramBinary` /
+     * `glProgramBinary` are core ES3 entry points exposed only via the
+     * `GLES30` Java binding.
+     */
+    private var isEs3: Boolean = false
+    private var programCache: OpenGLBlurProgramBinaryCache? = null
+    private var canUseProgramBinary: Boolean = false
+    private var glVendor: String = ""
+    private var glRenderer: String = ""
+    private var glVersion: String = ""
     private var surfaceHeight: Int = 0
 
     private var downsampleProgram = 0
@@ -350,31 +374,16 @@ class OpenGLBlur : BlurAlgorithm {
         val version = IntArray(2)
         if (!EGL14.eglInitialize(eglDisplay, version, 0, version, 1)) return false
 
-        val configs = arrayOfNulls<EGLConfig>(1)
-        val numConfigs = IntArray(1)
-        if (!EGL14.eglChooseConfig(
-                eglDisplay,
-                OpenGLBlurShaders.EGL_CONFIG_ATTRIBS,
-                0,
-                configs,
-                0,
-                1,
-                numConfigs,
-                0,
-            )
-        ) {
-            return false
+        // Try ES3 first so the program-binary cache (GLES30
+        // glGetProgramBinary / glProgramBinary) is reachable on devices
+        // that support it. On failure fall back to ES2 — runtime path
+        // still works, the per-launch shader cache is just unavailable.
+        if (tryConfigureContext(es3 = true)) {
+            isEs3 = true
+        } else {
+            if (!tryConfigureContext(es3 = false)) return false
+            isEs3 = false
         }
-        eglConfig = configs[0] ?: return false
-
-        eglContext = EGL14.eglCreateContext(
-            eglDisplay,
-            eglConfig,
-            EGL14.EGL_NO_CONTEXT,
-            OpenGLBlurShaders.EGL_CONTEXT_ATTRIBS,
-            0,
-        )
-        if (eglContext == EGL14.EGL_NO_CONTEXT) return false
 
         val surfaceAttribs = intArrayOf(
             EGL14.EGL_WIDTH, 1,
@@ -384,7 +393,71 @@ class OpenGLBlur : BlurAlgorithm {
         eglSurface = EGL14.eglCreatePbufferSurface(eglDisplay, eglConfig, surfaceAttribs, 0)
         if (eglSurface == EGL14.EGL_NO_SURFACE) return false
 
-        return makeCurrent()
+        if (!makeCurrent()) return false
+
+        // Query device identity once we have a current context. Used as
+        // part of the program-binary cache key so a binary produced by
+        // one driver is not loaded under another.
+        glVendor = GLES20.glGetString(GLES20.GL_VENDOR).orEmpty()
+        glRenderer = GLES20.glGetString(GLES20.GL_RENDERER).orEmpty()
+        glVersion = GLES20.glGetString(GLES20.GL_VERSION).orEmpty()
+        val glExtensions = GLES20.glGetString(GLES20.GL_EXTENSIONS).orEmpty()
+        canUseProgramBinary = isEs3 &&
+            glExtensions.contains("GL_OES_get_program_binary") &&
+            appContext != null
+        if (canUseProgramBinary) {
+            // Lazy: only allocate the cache wrapper when we'll actually
+            // use it. cacheDir touch is a fs call, fine on init thread.
+            val ctx = appContext
+            if (ctx != null) {
+                programCache = OpenGLBlurProgramBinaryCache(ctx.cacheDir)
+            } else {
+                canUseProgramBinary = false
+            }
+        }
+
+        return true
+    }
+
+    private fun tryConfigureContext(es3: Boolean): Boolean {
+        val configAttribs = if (es3) {
+            OpenGLBlurShaders.EGL_CONFIG_ATTRIBS_ES3
+        } else {
+            OpenGLBlurShaders.EGL_CONFIG_ATTRIBS_ES2
+        }
+        val ctxAttribs = if (es3) {
+            OpenGLBlurShaders.EGL_CONTEXT_ATTRIBS_ES3
+        } else {
+            OpenGLBlurShaders.EGL_CONTEXT_ATTRIBS_ES2
+        }
+
+        val configs = arrayOfNulls<EGLConfig>(1)
+        val numConfigs = IntArray(1)
+        if (!EGL14.eglChooseConfig(
+                eglDisplay,
+                configAttribs,
+                0,
+                configs,
+                0,
+                1,
+                numConfigs,
+                0,
+            )
+        ) return false
+        val config = configs[0] ?: return false
+
+        val ctx = EGL14.eglCreateContext(
+            eglDisplay,
+            config,
+            EGL14.EGL_NO_CONTEXT,
+            ctxAttribs,
+            0,
+        )
+        if (ctx == null || ctx == EGL14.EGL_NO_CONTEXT) return false
+
+        eglConfig = config
+        eglContext = ctx
+        return true
     }
 
     private fun makeCurrent(): Boolean {
@@ -603,6 +676,45 @@ class OpenGLBlur : BlurAlgorithm {
     }
 
     private fun createProgram(vertexSource: String, fragmentSource: String): Int {
+        // Fast path: try to load a cached program binary produced by a
+        // previous process launch with the same driver and source
+        // strings. On any failure (cache miss, schema mismatch, driver
+        // refusal) fall through to the cold compile + link path and
+        // store a fresh binary at the end.
+        val cache = programCache
+        val cacheKey = if (canUseProgramBinary && cache != null) {
+            OpenGLBlurProgramBinaryCache.deriveKey(
+                glVendor = glVendor,
+                glRenderer = glRenderer,
+                glVersion = glVersion,
+                vertexSource = vertexSource,
+                fragmentSource = fragmentSource,
+            )
+        } else {
+            null
+        }
+
+        if (cacheKey != null && cache != null) {
+            val entry = cache.read(cacheKey)
+            if (entry != null) {
+                val program = GLES20.glCreateProgram()
+                if (program != 0) {
+                    val buf = ByteBuffer.allocateDirect(entry.bytes.size)
+                        .order(ByteOrder.nativeOrder())
+                    buf.put(entry.bytes).position(0)
+                    try {
+                        GLES30.glProgramBinary(program, entry.format, buf, entry.bytes.size)
+                    } catch (_: Throwable) {
+                        // Swallow; fall through to compile path below.
+                    }
+                    val linkStatus = IntArray(1)
+                    GLES20.glGetProgramiv(program, GLES20.GL_LINK_STATUS, linkStatus, 0)
+                    if (linkStatus[0] != 0) return program
+                    GLES20.glDeleteProgram(program)
+                }
+            }
+        }
+
         val vertexShader = loadShader(GLES20.GL_VERTEX_SHADER, vertexSource)
         if (vertexShader == 0) return 0
 
@@ -612,6 +724,23 @@ class OpenGLBlur : BlurAlgorithm {
         val program = GLES20.glCreateProgram()
         GLES20.glAttachShader(program, vertexShader)
         GLES20.glAttachShader(program, fragmentShader)
+
+        // Hint that we plan to retrieve the binary. Must be set BEFORE
+        // glLinkProgram, otherwise glGetProgramBinary may return zero
+        // length on some drivers.
+        if (cacheKey != null) {
+            try {
+                GLES30.glProgramParameteri(
+                    program,
+                    GLES30.GL_PROGRAM_BINARY_RETRIEVABLE_HINT,
+                    GLES20.GL_TRUE,
+                )
+            } catch (_: Throwable) {
+                // Older devices: ignore; cache write below will simply
+                // see length=0 and skip.
+            }
+        }
+
         GLES20.glLinkProgram(program)
 
         val linkStatus = IntArray(1)
@@ -621,7 +750,38 @@ class OpenGLBlur : BlurAlgorithm {
             return 0
         }
 
+        // Persist the freshly-linked binary for the next process launch.
+        // Best-effort: any failure is logged inside the cache.
+        if (cacheKey != null && cache != null) {
+            saveProgramBinary(program, cache, cacheKey)
+        }
+
         return program
+    }
+
+    private fun saveProgramBinary(
+        program: Int,
+        cache: OpenGLBlurProgramBinaryCache,
+        cacheKey: String,
+    ) {
+        try {
+            val length = IntArray(1)
+            GLES30.glGetProgramiv(program, GLES30.GL_PROGRAM_BINARY_LENGTH, length, 0)
+            val n = length[0]
+            if (n <= 0) return
+            val buf = ByteBuffer.allocateDirect(n).order(ByteOrder.nativeOrder())
+            val outLen = IntArray(1)
+            val outFormat = IntArray(1)
+            GLES30.glGetProgramBinary(program, n, outLen, 0, outFormat, 0, buf)
+            val written = outLen[0]
+            if (written <= 0) return
+            val bytes = ByteArray(written)
+            buf.position(0)
+            buf.get(bytes, 0, written)
+            cache.write(cacheKey, outFormat[0], bytes)
+        } catch (_: Throwable) {
+            // Caching is best-effort; runtime path is unaffected.
+        }
     }
 
     private fun loadShader(type: Int, source: String): Int {
