@@ -636,6 +636,19 @@ class OpenGLBlur @JvmOverloads constructor(
     }
 
     /**
+     * True when this algorithm instance is fully ready to consume an
+     * external OES texture (SurfaceTexture-backed input). Requires both
+     * driver-level extension support and a successfully linked
+     * `downsampleExternalProgram`. Used by `BlurController.resolveStrategy`
+     * to decide whether the SURFACE_TEXTURE pipeline is safe to engage.
+     */
+    fun supportsExternalInput(): Boolean {
+        return isInitialized &&
+            downsampleExternalProgram != 0 &&
+            hasExternalOesSupport()
+    }
+
+    /**
      * Creates and returns a GL_TEXTURE_EXTERNAL_OES texture for use with SurfaceTexture.
      * Returns the texture ID, or 0 if external OES is not supported.
      */

@@ -178,17 +178,44 @@ class BlurController(
     /**
      * Resolves the pipeline strategy based on config and device capabilities.
      * Caches the result to avoid repeated GL extension queries.
+     *
+     * AUTO selection (verified against blur-cmp's own benchmarks in
+     * `docs/performance-analysis.md`):
+     *
+     * - SURFACE_TEXTURE wins everywhere it's available: capture cost
+     *   drops 40% (2.99 ms -> 1.78 ms on Pixel 9), upload cost drops
+     *   82% (0.61 ms -> 0.11 ms via OES texture). The mechanism is
+     *   `lockHardwareCanvas` recording display-list refs into a
+     *   hardware canvas instead of CPU-software-rasterizing into a
+     *   bitmap, so `sourceView.draw(canvas)` is ~3 ms cheaper per
+     *   frame on the cold path.
+     * - EGL_IMAGE was *slower* than LEGACY at 4x downsample
+     *   (~1 ms per-frame `eglCreateImageFromHardwareBuffer` lifecycle
+     *   exceeds the ~0.3 ms bitmap-copy + texImage2D crossing). Not
+     *   selected by AUTO.
+     * - LEGACY is the safe fallback when neither preconditions hold:
+     *   `Surface.lockHardwareCanvas` requires API 26+, and the OES
+     *   path requires `GL_OES_EGL_image_external` plus a successfully
+     *   linked `downsampleExternalProgram`. Failures surface as
+     *   `supportsExternalInput()` returning false.
      */
     private fun resolveStrategy(): BlurPipelineStrategy {
         resolvedStrategy?.let { return it }
 
         val requested = config.pipelineStrategy
         val resolved = when (requested) {
-            // AUTO: use LEGACY for Kawase pipeline. RecordingCanvas capture +
-            // TextureView output is already fast. EGLImage/SurfaceTexture are
-            // available as opt-in for testing but per-frame EGLImage overhead
-            // exceeds the crossing cost at downsampled resolutions.
-            BlurPipelineStrategy.AUTO -> BlurPipelineStrategy.LEGACY
+            BlurPipelineStrategy.AUTO -> {
+                val glBlur = algorithm as? OpenGLBlur
+                val canUseSurfaceTexture =
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                        glBlur != null &&
+                        glBlur.supportsExternalInput()
+                if (canUseSurfaceTexture) {
+                    BlurPipelineStrategy.SURFACE_TEXTURE
+                } else {
+                    BlurPipelineStrategy.LEGACY
+                }
+            }
             else -> requested
         }
         resolvedStrategy = resolved
