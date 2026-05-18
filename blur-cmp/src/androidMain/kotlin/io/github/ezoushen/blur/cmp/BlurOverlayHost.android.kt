@@ -5,9 +5,11 @@ import android.graphics.RenderEffect
 import android.graphics.Shader
 import android.os.Build
 import android.view.View
+import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.annotation.RequiresApi
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -97,7 +99,7 @@ actual fun BlurOverlayHost(
 
                 AndroidView(
                     factory = { blurView },
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.matchParentSize(),
                     update = { view ->
                         val blurGradient = AndroidGradientMapper.toBlurGradient(gradient, config.radius)
                         view.setBlurGradient(blurGradient)
@@ -136,7 +138,7 @@ actual fun BlurOverlayHost(
 
                 AndroidView(
                     factory = { blurView },
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.matchParentSize(),
                     update = { view ->
                         view.setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
                         view.alpha = state.alpha
@@ -243,7 +245,7 @@ private fun buildBlurRenderEffect(radius: Float, config: BlurOverlayConfig): Ren
 }
 
 @Composable
-private fun ContentOverlay(
+private fun BoxScope.ContentOverlay(
     blurView: View,
     content: @Composable () -> Unit,
 ) {
@@ -259,8 +261,8 @@ private fun ContentOverlay(
             container.addView(
                 composeView,
                 FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
                 )
             )
             when (blurView) {
@@ -269,7 +271,7 @@ private fun ContentOverlay(
             }
             container
         },
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier,
         onRelease = { container ->
             when (blurView) {
                 is BlurView -> blurView.removeExcludedView(container)
