@@ -18,6 +18,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.ComposeView
@@ -130,13 +131,28 @@ actual fun BlurOverlayHost(
                     if (isBackdropMode) BlurView.kawase(context) else BlurView(context)
                 }
 
-                DisposableEffect(Unit) {
-                    onDispose { blurView.setIsLive(false) }
+                // Gate the BlurView's compose layer on the GL pipeline producing
+                // its first frame. Before that frame lands the underlying
+                // TextureView surface is opaque on some devices (Adreno, Mali),
+                // which reads as a black flash on cold mount of a backdrop blur.
+                // `Modifier.alpha` collapses the compose layer to fully
+                // transparent until [BlurView.setOnFirstFrameListener] fires.
+                var firstFrameReady by remember(blurView) {
+                    mutableStateOf(blurView.hasFirstFrame())
+                }
+                DisposableEffect(blurView) {
+                    blurView.setOnFirstFrameListener { firstFrameReady = true }
+                    onDispose {
+                        blurView.setOnFirstFrameListener(null)
+                        blurView.setIsLive(false)
+                    }
                 }
 
                 AndroidView(
                     factory = { blurView },
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .alpha(if (firstFrameReady) 1f else 0f),
                     update = { view ->
                         view.setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
                         view.alpha = state.alpha

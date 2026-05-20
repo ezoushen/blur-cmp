@@ -116,8 +116,7 @@ class BlurView private constructor(
                         controller.invalidate()
                     }
                     if (controller.update()) {
-                        hasFirstFrame = true
-                        invalidate()
+                        onFirstFrameAvailable()
                     }
                 }
             } else {
@@ -129,8 +128,7 @@ class BlurView private constructor(
                             controller.markContentDirty()
                         }
                         if (controller.update()) {
-                            hasFirstFrame = true
-                            invalidate()
+                            onFirstFrameAvailable()
                         }
                     }
                 }
@@ -158,6 +156,16 @@ class BlurView private constructor(
             blurTextureView = TextureView(context).also { tv ->
                 tv.isOpaque = false
                 tv.surfaceTextureListener = surfaceTextureListener
+                // Hide the TextureView's first paint until the GL pipeline
+                // has rendered a frame to its `SurfaceTexture`. Before that
+                // first frame lands the underlying surface is opaque on
+                // some devices (Adreno / Mali), which reads as a black
+                // flash on cold mount of a backdrop blur. Visibility is
+                // flipped back to `VISIBLE` from [onFirstFrameAvailable]
+                // — `INVISIBLE` (not `GONE`) keeps the view in layout so
+                // its `SurfaceTexture` is still allocated when the view
+                // attaches to the window.
+                tv.visibility = INVISIBLE
                 addView(tv, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
             }
         }
@@ -302,6 +310,37 @@ class BlurView private constructor(
      * @return True if blur is enabled, false otherwise.
      */
     fun isBlurEnabled(): Boolean = isBlurEnabled
+
+    /**
+     * Listener notified the first time a blur frame has been rendered to
+     * the GL output surface (TextureView path) or the RenderNode. Hosts
+     * use this to gate the visibility of any compose layer wrapping the
+     * BlurView until the cold-mount path has populated the GL surface —
+     * before that point a backdrop-blur view paints opaque on some
+     * devices, which reads as a black flash on a fresh menu/dialog.
+     */
+    fun interface OnFirstFrameListener {
+        fun onFirstFrame()
+    }
+
+    private var firstFrameListener: OnFirstFrameListener? = null
+
+    fun setOnFirstFrameListener(listener: OnFirstFrameListener?) {
+        firstFrameListener = listener
+        if (hasFirstFrame) listener?.onFirstFrame()
+    }
+
+    fun hasFirstFrame(): Boolean = hasFirstFrame
+
+    private fun onFirstFrameAvailable() {
+        if (hasFirstFrame) return
+        hasFirstFrame = true
+        // Reveal the GL output surface now that a frame is rendered to it
+        // (see the `INVISIBLE` initialiser on [blurTextureView]).
+        blurTextureView?.visibility = VISIBLE
+        invalidate()
+        firstFrameListener?.onFirstFrame()
+    }
 
     /**
      * Sets whether the blur updates in real-time.
