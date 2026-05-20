@@ -135,7 +135,7 @@ private fun DefaultBlurOverlay(
         val windowScene = findActiveWindowScene()
         val rootView = windowScene?.keyWindow?.rootViewController?.view
 
-        if (rootView != null && windowScene != null) {
+        if (rootView != null) {
             blurState.setupInView(rootView, config)
 
             val contentWindow = UIWindow(windowScene = windowScene)

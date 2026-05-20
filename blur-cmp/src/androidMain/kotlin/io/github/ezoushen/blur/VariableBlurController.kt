@@ -171,7 +171,7 @@ class VariableBlurController(
     fun addExcludedView(view: View) {
         (capture as? DecorViewCapture)?.addExcludedView(view)
         val stCapture = surfaceTextureCapture
-        if (stCapture != null) {
+        if (stCapture != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             stCapture.addExcludedView(view)
         } else {
             pendingStExcludedViews.add(view)
@@ -181,7 +181,9 @@ class VariableBlurController(
     fun removeExcludedView(view: View) {
         (capture as? DecorViewCapture)?.removeExcludedView(view)
         pendingStExcludedViews.remove(view)
-        surfaceTextureCapture?.removeExcludedView(view)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            surfaceTextureCapture?.removeExcludedView(view)
+        }
     }
 
     fun setOutputSurface(surface: android.view.Surface?, width: Int = 0, height: Int = 0) {
@@ -448,7 +450,9 @@ class VariableBlurController(
         algorithm.release()
         capture.release()
 
-        surfaceTextureCapture?.release()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            surfaceTextureCapture?.release()
+        }
         surfaceTextureCapture = null
         pendingStExcludedViews.clear()
         resolvedStrategy = null

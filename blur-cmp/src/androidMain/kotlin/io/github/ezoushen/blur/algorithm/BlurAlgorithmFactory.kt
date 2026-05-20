@@ -2,6 +2,7 @@ package io.github.ezoushen.blur.algorithm
 
 import android.content.Context
 import android.os.Build
+import androidx.annotation.RequiresApi
 
 /**
  * Factory for creating blur algorithm implementations.
@@ -35,10 +36,10 @@ object BlurAlgorithmFactory {
         return when (type) {
             AlgorithmType.OPENGL -> OpenGLBlur(null)
             AlgorithmType.RENDER_EFFECT -> {
-                require(Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    "RenderEffect requires API 31+"
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                    throw IllegalArgumentException("RenderEffect requires API 31+")
                 }
-                RenderEffectBlur()
+                createRenderEffectBlur()
             }
             AlgorithmType.RENDER_SCRIPT -> {
                 @Suppress("DEPRECATION")
@@ -48,6 +49,9 @@ object BlurAlgorithmFactory {
             AlgorithmType.NONE -> NoOpBlurAlgorithm()
         }
     }
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private fun createRenderEffectBlur(): BlurAlgorithm = RenderEffectBlur()
 
     /**
      * Returns information about the default algorithm.

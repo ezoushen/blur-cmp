@@ -4,6 +4,7 @@ import android.graphics.SurfaceTexture
 import android.os.Build
 import android.view.Surface
 import android.view.View
+import androidx.annotation.ChecksSdkIntAtLeast
 import androidx.annotation.RequiresApi
 
 /**
@@ -158,6 +159,7 @@ class SurfaceTextureCapture {
     }
 
     companion object {
+        @ChecksSdkIntAtLeast(api = Build.VERSION_CODES.O)
         fun isAvailable(): Boolean =
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
     }

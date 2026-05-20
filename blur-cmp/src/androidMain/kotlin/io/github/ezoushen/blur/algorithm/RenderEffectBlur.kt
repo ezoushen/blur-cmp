@@ -7,6 +7,7 @@ import android.renderscript.Allocation
 import android.renderscript.Element
 import android.renderscript.RenderScript
 import android.renderscript.ScriptIntrinsicBlur
+import androidx.annotation.ChecksSdkIntAtLeast
 import androidx.annotation.RequiresApi
 import androidx.core.graphics.createBitmap
 
@@ -154,9 +155,9 @@ class RenderEffectBlur : BlurAlgorithm {
 
     override fun getSupportedBitmapConfig(): Bitmap.Config = Bitmap.Config.ARGB_8888
 
-    override fun isAvailable(): Boolean {
-        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-    }
+    @ChecksSdkIntAtLeast(api = Build.VERSION_CODES.S)
+    override fun isAvailable(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
 
     override fun getName(): String = "RenderEffect"
 }

@@ -3,6 +3,7 @@ package io.github.ezoushen.blur.util
 import android.app.ActivityManager
 import android.content.Context
 import android.os.Build
+import androidx.annotation.ChecksSdkIntAtLeast
 import androidx.annotation.IntDef
 
 /**
@@ -83,6 +84,7 @@ object DeviceCapability {
     /**
      * Checks if RenderEffect API is available (API 31+).
      */
+    @ChecksSdkIntAtLeast(api = Build.VERSION_CODES.S)
     fun supportsRenderEffect(): Boolean {
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     }
@@ -90,6 +92,7 @@ object DeviceCapability {
     /**
      * Checks if AGSL/RuntimeShader is available (API 33+).
      */
+    @ChecksSdkIntAtLeast(api = Build.VERSION_CODES.TIRAMISU)
     fun supportsAGSL(): Boolean {
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
     }
@@ -97,6 +100,7 @@ object DeviceCapability {
     /**
      * Checks if HardwareBuffer is available (API 26+).
      */
+    @ChecksSdkIntAtLeast(api = Build.VERSION_CODES.O)
     fun supportsHardwareBuffer(): Boolean {
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
     }

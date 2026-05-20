@@ -385,6 +385,11 @@ Falls through to Kawase pipeline (Section 2.1+) when:
 
 ## 4. Platform Comparison
 
+Target support from the Kotlin 2.3.20 / Compose Multiplatform 1.11.0 line is
+Android release, iosArm64, and iosSimulatorArm64. Apple x86_64 simulator
+artifacts are not published because Compose Multiplatform 1.11.0 no longer
+supports that target.
+
 ```
   ┌─────────────────────┬──────────────────────┬──────────────────────┐
   │                     │      ANDROID         │        iOS           │

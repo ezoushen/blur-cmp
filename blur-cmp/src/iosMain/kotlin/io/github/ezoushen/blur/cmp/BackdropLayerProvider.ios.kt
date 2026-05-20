@@ -104,7 +104,7 @@ internal object IosBackdropLayerProvider {
         }
     }
 
-    @Suppress("UNCHECKED_CAST")
+    @Suppress("CAST_NEVER_SUCCEEDS", "UNCHECKED_CAST")
     fun createVariableBlurFilter(radius: Double, maskImage: CGImageRef): NSObject? {
         prepareOnce()
         val cls = filterClass ?: return null

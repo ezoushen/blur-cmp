@@ -460,8 +460,8 @@ class VariableBlurView @JvmOverloads constructor(
 
         repeat(4) {
             when (ctx) {
-                is Activity -> return (ctx as Activity).window.decorView
-                is ContextWrapper -> ctx = (ctx as ContextWrapper).baseContext
+                is Activity -> return ctx.window.decorView
+                is ContextWrapper -> ctx = ctx.baseContext
                 else -> return null
             }
         }

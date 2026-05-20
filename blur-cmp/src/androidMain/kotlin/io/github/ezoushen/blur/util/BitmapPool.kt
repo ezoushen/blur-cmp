@@ -15,7 +15,7 @@ import java.util.LinkedList
  * @param maxPoolSize Maximum number of bitmaps to keep in the pool
  */
 class BitmapPool(
-    @IntRange(from = 1, to = 16)
+    @param:IntRange(from = 1, to = 16)
     private val maxPoolSize: Int = 4
 ) {
     private val pool = LinkedList<Bitmap>()

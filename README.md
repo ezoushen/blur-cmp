@@ -19,6 +19,7 @@ Blurs whatever is behind it in the view hierarchy — like iOS `UIVisualEffectVi
 |---|---|---|
 | Blur engine | OpenGL ES 2.0 Dual Kawase | CABackdropLayer (GPU compositor) |
 | Min version | API 23 | iOS 15 |
+| Published targets | Android release | iosArm64, iosSimulatorArm64 |
 | Variable blur | OpenGL pyramid compositing | CAFilter variableBlur + mask |
 | Performance | ~39 texture samples/pixel | Zero-cost compositor capture |
 
@@ -256,10 +257,13 @@ Uses `CABackdropLayer` extracted from `UIVisualEffectView`:
 
 ## Requirements
 
-- **Kotlin**: 2.2.20+
-- **Compose Multiplatform**: 1.8.2+
+- **Kotlin**: 2.3.20+
+- **Compose Multiplatform**: 1.11.0+
+- **Android Gradle Plugin**: 8.13.2+ recommended for Kotlin 2.3 Android metadata
 - **Android**: API 23+ (minSdk 23)
-- **iOS**: 15+
+- **iOS**: 15+ on iosArm64 and iosSimulatorArm64
+
+Compose Multiplatform 1.11.0 no longer publishes Apple x86_64 artifacts. Projects that need the Intel iOS simulator target must stay on the last 0.7.x blur-cmp line or maintain a separate legacy build.
 
 ## License
 

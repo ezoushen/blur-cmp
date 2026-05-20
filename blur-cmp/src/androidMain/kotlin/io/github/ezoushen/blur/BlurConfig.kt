@@ -20,13 +20,13 @@ import io.github.ezoushen.blur.cmp.TintOrder
  *                            downsample factors using 4x as the baseline.
  */
 data class BlurConfig(
-    @FloatRange(from = 0.0)
+    @param:FloatRange(from = 0.0)
     val radius: Float = 16f,
-    @ColorInt
+    @param:ColorInt
     val tintColor: Int? = null,
     val tintBlendModeOrdinal: Int? = null,
     val tintOrder: TintOrder = TintOrder.POST_BLUR,
-    @FloatRange(from = 1.0, to = 16.0)
+    @param:FloatRange(from = 1.0, to = 16.0)
     val downsampleFactor: Float = 4f,
     /** Pipeline strategy for blur capture. AUTO selects the best available. */
     val pipelineStrategy: BlurPipelineStrategy = BlurPipelineStrategy.AUTO
@@ -45,12 +45,12 @@ data class BlurConfig(
         /**
          * Light blur preset - subtle frosted glass effect.
          */
-        val Light = BlurConfig(radius = 10f, tintColor = 0x40FFFFFF.toInt())
+        val Light = BlurConfig(radius = 10f, tintColor = 0x40FFFFFF)
 
         /**
          * Medium blur preset - balanced blur effect.
          */
-        val Medium = BlurConfig(radius = 20f, tintColor = 0x60FFFFFF.toInt())
+        val Medium = BlurConfig(radius = 20f, tintColor = 0x60FFFFFF)
 
         /**
          * Heavy blur preset - strong blur for privacy or dramatic effect.

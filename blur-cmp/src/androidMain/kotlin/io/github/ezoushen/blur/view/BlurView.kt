@@ -14,6 +14,7 @@ import android.view.TextureView
 import android.view.View
 import android.view.ViewTreeObserver
 import android.widget.FrameLayout
+import androidx.annotation.ChecksSdkIntAtLeast
 import io.github.ezoushen.blur.BlurConfig
 import io.github.ezoushen.blur.BlurController
 import io.github.ezoushen.blur.RenderNodeBlurController
@@ -78,6 +79,11 @@ class BlurView private constructor(
         fun kawase(context: Context): BlurView =
             BlurView(context, null, 0, useRenderNode = false)
     }
+
+    @ChecksSdkIntAtLeast(api = Build.VERSION_CODES.S)
+    private fun canUseRenderNode(): Boolean =
+        useRenderNode && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+
     private var decorView: View? = null
 
     // For tracking rendering state to prevent infinite recursion
@@ -109,7 +115,7 @@ class BlurView private constructor(
     private val preDrawListener = ViewTreeObserver.OnPreDrawListener {
         if (isBlurEnabled) {
             val needsFirstFrame = !hasFirstFrame
-            if (useRenderNode) {
+            if (canUseRenderNode()) {
                 val controller = renderNodeController
                 if (controller != null && (needsFirstFrame || (isLive && isShown))) {
                     if (isLive) {
@@ -149,7 +155,7 @@ class BlurView private constructor(
         attrs?.let { parseAttributes(context, it) }
 
         // Initialize blur controller
-        if (useRenderNode) {
+        if (canUseRenderNode()) {
             renderNodeController = RenderNodeBlurController()
         } else {
             blurController = BlurController(context, blurConfig)
@@ -223,7 +229,7 @@ class BlurView private constructor(
      */
     fun setBlurConfig(config: BlurConfig) {
         blurConfig = config
-        if (useRenderNode) {
+        if (canUseRenderNode()) {
             renderNodeController?.setConfig(config)
         } else {
             blurController?.setConfig(config)
@@ -245,7 +251,7 @@ class BlurView private constructor(
      */
     fun setBlurRadius(radius: Float) {
         blurConfig = blurConfig.copy(radius = radius.coerceIn(0f, 25f))
-        if (useRenderNode) {
+        if (canUseRenderNode()) {
             renderNodeController?.setConfig(blurConfig)
         } else {
             blurController?.setConfig(blurConfig)
@@ -261,7 +267,7 @@ class BlurView private constructor(
      */
     fun setTintColor(color: Int?) {
         blurConfig = blurConfig.copy(tintColor = color?.takeIf { it != Color.TRANSPARENT })
-        if (useRenderNode) {
+        if (canUseRenderNode()) {
             renderNodeController?.setConfig(blurConfig)
         } else {
             blurController?.setConfig(blurConfig)
@@ -276,7 +282,7 @@ class BlurView private constructor(
      */
     fun setDownsampleFactor(factor: Float) {
         blurConfig = blurConfig.copy(downsampleFactor = factor.coerceIn(1f, 16f))
-        if (useRenderNode) {
+        if (canUseRenderNode()) {
             renderNodeController?.setConfig(blurConfig)
         } else {
             blurController?.setConfig(blurConfig)
@@ -317,7 +323,9 @@ class BlurView private constructor(
             isLive = live
             if (live) {
                 blurController?.markContentDirty()
-                renderNodeController?.invalidate()
+                if (canUseRenderNode()) {
+                    renderNodeController?.invalidate()
+                }
                 invalidate()
             }
         }
@@ -338,7 +346,9 @@ class BlurView private constructor(
      */
     fun requestSingleUpdate() {
         blurController?.markContentDirty()
-        renderNodeController?.invalidate()
+        if (canUseRenderNode()) {
+            renderNodeController?.invalidate()
+        }
         invalidate()
     }
 
@@ -352,7 +362,7 @@ class BlurView private constructor(
      * drawn sharp on top of the blur).
      */
     fun addExcludedView(view: View) {
-        if (useRenderNode) {
+        if (canUseRenderNode()) {
             renderNodeController?.addExcludedView(view)
         } else {
             val controller = blurController
@@ -369,7 +379,7 @@ class BlurView private constructor(
      */
     fun removeExcludedView(view: View) {
         pendingExcludedViews.remove(view)
-        if (useRenderNode) {
+        if (canUseRenderNode()) {
             renderNodeController?.removeExcludedView(view)
         } else {
             blurController?.removeExcludedView(view)
@@ -391,7 +401,7 @@ class BlurView private constructor(
      */
     fun setBlurredView(view: View) {
         blurredView = view
-        if (useRenderNode) {
+        if (canUseRenderNode()) {
             renderNodeController?.init(this, view)
         } else {
             blurController?.init(this, view)
@@ -404,7 +414,7 @@ class BlurView private constructor(
      * and real-time updates are disabled for performance reasons.
      */
     fun updateBlur() {
-        if (useRenderNode) {
+        if (canUseRenderNode()) {
             renderNodeController?.invalidate()
         } else {
             blurController?.invalidate()
@@ -416,7 +426,7 @@ class BlurView private constructor(
      * Returns the name of the blur algorithm being used.
      */
     fun getAlgorithmName(): String {
-        if (useRenderNode) return renderNodeController?.getAlgorithmName() ?: "None"
+        if (canUseRenderNode()) return renderNodeController?.getAlgorithmName() ?: "None"
         return blurController?.getAlgorithmName() ?: "None"
     }
 
@@ -429,7 +439,7 @@ class BlurView private constructor(
         // Initialize blur controller with source view
         val source = blurredView ?: decorView
         if (source != null) {
-            if (useRenderNode) {
+            if (canUseRenderNode()) {
                 renderNodeController?.setConfig(blurConfig)
                 renderNodeController?.init(this, source)
                 // Forward pending excluded views
@@ -465,7 +475,7 @@ class BlurView private constructor(
         blurSurface?.release()
         blurSurface = null
 
-        if (useRenderNode) {
+        if (canUseRenderNode()) {
             renderNodeController?.release()
         } else {
             blurController?.release()
@@ -476,7 +486,7 @@ class BlurView private constructor(
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        if (useRenderNode) {
+        if (canUseRenderNode()) {
             renderNodeController?.invalidate()
         } else {
             blurController?.markContentDirty()
@@ -487,7 +497,7 @@ class BlurView private constructor(
         // Skip drawing during capture to prevent recursion.
         // Using return instead of throw to avoid corrupting Compose's RenderNode
         // recording state when BlurView is hosted inside a Compose render tree.
-        if (useRenderNode) {
+        if (canUseRenderNode()) {
             if (renderNodeController?.isCapturing() == true) return
         } else {
             if (blurController?.isCapturing() == true) return
@@ -505,7 +515,7 @@ class BlurView private constructor(
         if (isBlurEnabled && !isInEditMode) {
             isRendering = true
             try {
-                if (useRenderNode) {
+                if (canUseRenderNode()) {
                     renderNodeController?.draw(canvas)
                 } else if (blurController?.hasOutputSurface() != true) {
                     // Only draw via canvas when TextureView output is not active.
@@ -529,8 +539,8 @@ class BlurView private constructor(
         // Unwrap ContextWrapper to find Activity
         repeat(4) {
             when (ctx) {
-                is Activity -> return (ctx as Activity).window.decorView
-                is ContextWrapper -> ctx = (ctx as ContextWrapper).baseContext
+                is Activity -> return ctx.window.decorView
+                is ContextWrapper -> ctx = ctx.baseContext
                 else -> return null
             }
         }

@@ -9,6 +9,7 @@ import android.hardware.HardwareBuffer
 import android.media.ImageReader
 import android.os.Build
 import android.view.View
+import androidx.annotation.ChecksSdkIntAtLeast
 import androidx.annotation.RequiresApi
 
 /**
@@ -306,6 +307,7 @@ class HardwareBufferCapture : ContentCapture {
     override fun isAvailable(): Boolean = Companion.isAvailable()
 
     companion object {
+        @ChecksSdkIntAtLeast(api = Build.VERSION_CODES.Q)
         fun isAvailable(): Boolean =
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
     }
