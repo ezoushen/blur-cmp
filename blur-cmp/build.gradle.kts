@@ -97,7 +97,9 @@ publishing {
 mavenPublishing {
     configure(KotlinMultiplatform(javadocJar = com.vanniktech.maven.publish.JavadocJar.Empty()))
     publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL)
-    signAllPublications()
+    if (project.findProperty("skipSigning") != "true") {
+        signAllPublications()
+    }
 
     pom {
         name.set("blur-cmp")
