@@ -43,6 +43,7 @@ kotlin {
             implementation(libs.androidx.core.ktx)
             implementation(libs.androidx.appcompat)
             implementation(libs.androidx.annotation)
+            implementation(libs.androidx.activity.compose)
             implementation("androidx.graphics:graphics-core:1.0.2")
         }
 
