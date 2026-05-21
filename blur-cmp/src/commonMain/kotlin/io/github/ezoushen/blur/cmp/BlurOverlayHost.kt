@@ -68,14 +68,47 @@ fun BlurOverlayHost(
  */
 internal val EmptyBackground: @Composable () -> Unit = {}
 
+/**
+ * Backdrop blur overlay.
+ *
+ * When [onDismissRequest] is `null` the overlay renders inline in the
+ * current Compose tree — the caller is responsible for hosting it in a
+ * surface that gives the backdrop a stable region to blur (typically the
+ * activity / view-controller's root). When [onDismissRequest] is non-null
+ * the overlay is hosted in a [BackdropBlurDialog] automatically: on
+ * Android that promotes it into a transparent edge-to-edge `Dialog`
+ * Window — which is required for the backdrop blur to extend under status
+ * + navigation bars and to avoid the cold-mount black frame produced by
+ * adding a fresh overlay window underneath; on iOS the wrapper is a
+ * passthrough because the native modal presentation chain already
+ * supplies an equivalent surface.
+ *
+ * Pass [onDismissRequest] whenever the overlay represents a stand-alone
+ * presentation (menu, sheet, fullscreen blur backdrop); omit it when the
+ * overlay is composed inline as one element of a larger compose tree.
+ */
 @Composable
 fun BlurOverlay(
     state: BlurOverlayState,
     modifier: Modifier = Modifier,
+    onDismissRequest: (() -> Unit)? = null,
     content: @Composable () -> Unit,
-) = BlurOverlayHost(
-    state = state,
-    modifier = modifier,
-    background = EmptyBackground,
-    content = content,
-)
+) {
+    if (onDismissRequest != null) {
+        BackdropBlurDialog(onDismissRequest = onDismissRequest) {
+            BlurOverlayHost(
+                state = state,
+                modifier = modifier,
+                background = EmptyBackground,
+                content = content,
+            )
+        }
+    } else {
+        BlurOverlayHost(
+            state = state,
+            modifier = modifier,
+            background = EmptyBackground,
+            content = content,
+        )
+    }
+}
