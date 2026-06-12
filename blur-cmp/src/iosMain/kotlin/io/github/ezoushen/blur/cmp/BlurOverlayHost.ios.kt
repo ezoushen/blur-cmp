@@ -24,9 +24,14 @@ import platform.UIKit.UIColor
 import platform.UIKit.UIView
 import platform.UIKit.UIViewAutoresizingFlexibleHeight
 import platform.UIKit.UIViewAutoresizingFlexibleWidth
+import platform.UIKit.UIViewController
+import platform.UIKit.addChildViewController
+import platform.UIKit.childViewControllers
+import platform.UIKit.didMoveToParentViewController
+import platform.UIKit.removeFromParentViewController
+import platform.UIKit.willMoveToParentViewController
 import platform.UIKit.UIVisualEffectView
 import platform.UIKit.UIWindow
-import platform.UIKit.UIWindowLevelNormal
 import platform.UIKit.UIWindowScene
 import platform.objc.object_getClass
 
@@ -35,10 +40,13 @@ import platform.objc.object_getClass
  *
  * Two modes based on [LocalBlurOverlayPlatformContext]:
  *
- * **Default (no injected window):**
+ * **Default (no injected window) — fully integrated, single window:**
  *   CMP MetalView (renders background)
- *     -> blur overlay (CABackdropLayer on rootVC view)
- *     -> content via new UIWindow (ComposeUIViewController, opaque=false)
+ *     -> one plain-native container UIViewController (child VC of rootVC,
+ *        transparent view sibling above the MetalView), holding:
+ *          [0] blur backdrop (real native CABackdropLayer view)
+ *          [1] content ComposeUIViewController (opaque=false), above the backdrop
+ *   No second UIWindow; a modal presented from the host VC covers the content.
  *
  * **Injected window (contentWindow provided):**
  *   The caller owns a UIWindow above the app window.
@@ -70,7 +78,7 @@ actual fun BlurOverlayHost(
     if (injectedWindow != null) {
         InjectedWindowBlurOverlay(state, modifier, background, content, injectedWindow)
     } else {
-        DefaultBlurOverlay(state, modifier, background, content)
+        IntegratedBlurOverlay(state, modifier, background, content)
     }
 }
 
@@ -115,11 +123,22 @@ private fun InjectedWindowBlurOverlay(
 }
 
 /**
- * Default path: creates its own UIWindow for content (original behavior).
+ * Default path: fully-integrated, single-window model.
+ *
+ * Hosts the backdrop and the content together inside one plain-native container
+ * [UIViewController], added as a single child VC of the host root VC. The backdrop
+ * is a real native view (placement/capture path unchanged from the prior hybrid);
+ * the content is a nested [ComposeUIViewController] ordered above the backdrop. No
+ * second [UIWindow] and no `keyWindow` mutation, so a modal presented from the host
+ * VC covers the content correctly.
+ *
+ * The container MUST be a plain [UIViewController] (its view is a plain [UIView]) —
+ * a [ComposeUIViewController]'s view is itself a Metal surface, and nesting the
+ * backdrop inside it would stop the backdrop capturing (see commit 5136288).
  */
 @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
-private fun DefaultBlurOverlay(
+private fun IntegratedBlurOverlay(
     state: BlurOverlayState,
     modifier: Modifier,
     background: @Composable () -> Unit,
@@ -132,17 +151,27 @@ private fun DefaultBlurOverlay(
     contentHolder.content = content
 
     DisposableEffect(Unit) {
-        val windowScene = findActiveWindowScene()
-        val rootView = windowScene?.keyWindow?.rootViewController?.view
+        val rootVC = findActiveWindowScene()?.keyWindow?.rootViewController
+        val rootView = rootVC?.view
 
-        if (rootView != null) {
-            blurState.setupInView(rootView, config)
+        if (rootVC != null && rootView != null) {
+            // One plain-native container VC; its transparent view sits above the host MetalView.
+            val containerVC = UIViewController(nibName = null, bundle = null)
+            containerVC.view.backgroundColor = UIColor.clearColor
+            containerVC.view.setOpaque(false)
+            containerVC.view.setFrame(rootView.bounds)
+            containerVC.view.setAutoresizingMask(
+                UIViewAutoresizingFlexibleWidth or UIViewAutoresizingFlexibleHeight
+            )
 
-            val contentWindow = UIWindow(windowScene = windowScene)
-            contentWindow.windowLevel = UIWindowLevelNormal + 1.0
-            contentWindow.backgroundColor = UIColor.clearColor
-            contentWindow.setOpaque(false)
+            rootVC.addChildViewController(containerVC)
+            rootView.addSubview(containerVC.view)
+            containerVC.didMoveToParentViewController(rootVC)
 
+            // Backdrop: real native view, inside the container (NOT inside any Compose surface).
+            blurState.setupInView(containerVC.view, config)
+
+            // Content: nested ComposeVC, sibling ABOVE the backdrop within the container.
             val contentVC = ComposeUIViewController(
                 configure = { opaque = false }
             ) {
@@ -152,15 +181,20 @@ private fun DefaultBlurOverlay(
             }
             contentVC.view.backgroundColor = UIColor.clearColor
             contentVC.view.setOpaque(false)
+            contentVC.view.setFrame(containerVC.view.bounds)
+            contentVC.view.setAutoresizingMask(
+                UIViewAutoresizingFlexibleWidth or UIViewAutoresizingFlexibleHeight
+            )
 
-            contentWindow.rootViewController = contentVC
-            contentWindow.makeKeyAndVisible()
+            containerVC.addChildViewController(contentVC)
+            containerVC.view.addSubview(contentVC.view) // added last → above the backdrop
+            contentVC.didMoveToParentViewController(containerVC)
 
-            blurState.contentWindow = contentWindow
+            blurState.containerViewController = containerVC
         }
 
         onDispose {
-            blurState.cleanup()
+            blurState.cleanupIntegrated()
         }
     }
 
@@ -203,7 +237,7 @@ internal class IosBlurState {
     private val maskCache = IosGradientMaskCache()
     private var isBeforeBlurActive = false
 
-    var contentWindow: UIWindow? = null
+    var containerViewController: UIViewController? = null
 
     fun applyAlpha(alpha: Float) {
         container?.setAlpha(alpha.toDouble())
@@ -401,10 +435,25 @@ internal class IosBlurState {
         )
     }
 
-    fun cleanup() {
+    /**
+     * Integrated mode teardown: removes the nested content VC, the backdrop, and
+     * the container VC from the host VC tree. Mirrors the add order in reverse.
+     */
+    fun cleanupIntegrated() {
         cleanupBackdrop()
-        contentWindow?.rootViewController = null
-        contentWindow?.setHidden(true)
-        contentWindow = null
+        val cvc = containerViewController
+        if (cvc != null) {
+            for (child in cvc.childViewControllers) {
+                (child as? UIViewController)?.let { childVC ->
+                    childVC.willMoveToParentViewController(null)
+                    childVC.view.removeFromSuperview()
+                    childVC.removeFromParentViewController()
+                }
+            }
+            cvc.willMoveToParentViewController(null)
+            cvc.view.removeFromSuperview()
+            cvc.removeFromParentViewController()
+        }
+        containerViewController = null
     }
 }
