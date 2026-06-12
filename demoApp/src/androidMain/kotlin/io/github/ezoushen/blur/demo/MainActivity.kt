@@ -10,10 +10,12 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import io.github.ezoushen.blur.BlurPerfMonitor
+import java.lang.ref.WeakReference
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        demoActivityRef = WeakReference(this)
         enableEdgeToEdge()
         setContent {
             Box(Modifier.fillMaxSize()) {
