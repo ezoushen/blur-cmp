@@ -377,6 +377,12 @@ private fun VariableBlurDemo(
                             isSelected = false,
                             onClick = { presentNativeChildScreen() },
                         )
+                        Spacer(Modifier.height(8.dp))
+                        Chip(
+                            label = "Present Window Dialog",
+                            isSelected = false,
+                            onClick = { presentBlurWindowDialog() },
+                        )
                     }
                 }
 
