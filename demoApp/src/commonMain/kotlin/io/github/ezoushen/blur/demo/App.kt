@@ -371,6 +371,12 @@ private fun VariableBlurDemo(
                         BasicText("Variable Blur", style = textTitle)
                         Spacer(Modifier.height(8.dp))
                         BasicText(gradientStyle.label, style = textWhite)
+                        Spacer(Modifier.height(16.dp))
+                        Chip(
+                            label = "Present Child (native)",
+                            isSelected = false,
+                            onClick = { presentNativeChildScreen() },
+                        )
                     }
                 }
 
