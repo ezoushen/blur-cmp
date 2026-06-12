@@ -275,40 +275,55 @@ Falls through to Kawase pipeline (Section 2.1+) when:
 
 ## 3. iOS Pipeline
 
-### 3.1 Component Stack
+### 3.1 Component Stack (default: fully-integrated, single window)
+
+The default `BlurOverlay` / `BlurOverlayHost` hosts the backdrop **and** the
+content together inside one plain-native container `UIViewController`, added as a
+single child VC of the host root VC. No second `UIWindow`, no `makeKeyAndVisible`.
 
 ```
   UIWindowScene
   ┌──────────────────────────────────────────────────┐
-  │  Main UIWindow (windowLevel = Normal)            │
+  │  App UIWindow (windowLevel = Normal)             │
   │  ┌────────────────────────────────────────────┐  │
   │  │  RootVC.view                               │  │
   │  │  ┌──────────────────────────────────────┐  │  │
   │  │  │  CMP MetalView                       │  │  │
   │  │  │    └── background()                  │  │  │
   │  │  ├──────────────────────────────────────┤  │  │
-  │  │  │  Blur Container (UIView, alpha-ctrl) │  │  │
+  │  │  │  Container VC.view (plain, clear)    │  │  │ ← ONE child VC of RootVC
   │  │  │  ┌──────────────────────────────┐    │  │  │
-  │  │  │  │ (opt) Pre-blend BackdropView │    │  │  │
-  │  │  │  │   └── tintLayer (ColorDodge) │    │  │  │
+  │  │  │  │ Blur Container (alpha-ctrl)  │    │  │  │
+  │  │  │  │  ├ (opt) Pre-blend Backdrop  │    │  │  │
+  │  │  │  │  │    └ tintLayer (ColorDodge)│   │  │  │
+  │  │  │  │  └ BackdropView              │    │  │  │
+  │  │  │  │      ├ CABackdropLayer       │    │  │  │
+  │  │  │  │      │   └ filters:[blur(16)]│    │  │  │
+  │  │  │  │      └ tintLayer (Normal)    │    │  │  │
   │  │  │  ├──────────────────────────────┤    │  │  │
-  │  │  │  │ BackdropView                 │    │  │  │
-  │  │  │  │   ├── CABackdropLayer        │    │  │  │
-  │  │  │  │   │   └── filters: [         │    │  │  │
-  │  │  │  │   │       gaussianBlur(r=16) │    │  │  │
-  │  │  │  │   │     ]                    │    │  │  │
-  │  │  │  │   └── tintLayer (Normal)     │    │  │  │
+  │  │  │  │ ComposeUIViewController      │    │  │  │ ← content(), sharp,
+  │  │  │  │   (opaque=false)             │    │  │  │   opaque=false, sibling
+  │  │  │  │   └── content()              │    │  │  │   ABOVE the backdrop
   │  │  │  └──────────────────────────────┘    │  │  │
   │  │  └──────────────────────────────────────┘  │  │
   │  └────────────────────────────────────────────┘  │
-  ├──────────────────────────────────────────────────┤
-  │  Content UIWindow (windowLevel = Normal + 1)     │
-  │  ┌────────────────────────────────────────────┐  │
-  │  │  ComposeUIViewController (opaque=false)    │  │
-  │  │    └── content()  ← sharp overlay           │  │
-  │  └────────────────────────────────────────────┘  │
   └──────────────────────────────────────────────────┘
 ```
+
+A modal presented from `RootVC` (same app window) covers `content()` correctly,
+and there is no `keyWindow` mutation, so stacked overlays each sample the right
+backdrop. The container **must** be a plain `UIViewController` — a
+`ComposeUIViewController`'s view is itself a Metal surface, and nesting the
+backdrop inside it would stop the backdrop capturing (commit `5136288`).
+
+**Separated mode (opt-in, `LocalBlurOverlayPlatformContext.contentWindow`).**
+When a caller needs true window isolation it supplies its own `UIWindow`;
+blur-cmp adds the backdrop to that window at index 0 and renders `content()`
+inline in the caller's composition (same window, host composition preserved).
+`PlatformDialogManager`-style callers use this at `UIWindowLevelAlert`. (The
+pre-0.9 default was a third, now-removed "hybrid" model that put the backdrop in
+the app window but `content()` in a separate `windowLevel = Normal + 1` window —
+which is why a modal presented from the app window rendered *under* the overlay.)
 
 ### 3.2 How CABackdropLayer Works
 
@@ -326,7 +341,7 @@ Falls through to Kawase pipeline (Section 2.1+) when:
   │        ↓ gaussianBlur(inputRadius=16)          │
   │        ↓ outputs blurred pixels                │
   │  3. tintLayer (post-blur color overlay)        │
-  │  4. Content UIWindow (sharp overlay)           │
+  │  4. Content ComposeVC (sharp overlay, above)   │
   │                                                │
   │  ALL happens in the GPU compositor.            │
   │  Zero CPU copies. Zero bitmap allocations.     │
@@ -403,9 +418,9 @@ supports that target.
   ├─────────────────────┼──────────────────────┼──────────────────────┤
   │ CPU copies          │ 2 (capture + read)   │ 0 (zero-copy)       │
   ├─────────────────────┼──────────────────────┼──────────────────────┤
-  │ Content overlay     │ ComposeView in       │ Separate UIWindow    │
-  │                     │ FrameLayout          │ (windowLevel + 1)    │
-  │                     │ (excludedView)       │ (opaque = false)     │
+  │ Content overlay     │ ComposeView in       │ Nested ComposeVC in  │
+  │                     │ FrameLayout          │ container VC, same   │
+  │                     │ (excludedView)       │ window (opaque=false)│
   ├─────────────────────┼──────────────────────┼──────────────────────┤
   │ Tint (POST_BLUR)    │ drawTint(canvas)     │ tintLayer on top of  │
   │                     │ after blur draw      │ backdrop sublayer    │
