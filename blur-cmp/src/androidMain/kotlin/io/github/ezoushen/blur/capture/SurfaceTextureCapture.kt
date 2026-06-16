@@ -92,6 +92,7 @@ class SurfaceTextureCapture {
         }
 
         val hiddenViews = mutableListOf<View>()
+        val dimmedViews = mutableListOf<Pair<View, Float>>()
 
         try {
             isCapturing = true
@@ -102,9 +103,14 @@ class SurfaceTextureCapture {
                 hiddenViews.add(blurView)
             }
             for (excluded in excludedViews) {
-                if (excluded.visibility == View.VISIBLE) {
-                    excluded.visibility = View.INVISIBLE
-                    hiddenViews.add(excluded)
+                // Exclude via alpha, NOT visibility. Setting an excluded view INVISIBLE clears its
+                // focus and tears down the IME input connection on every capture frame, so a focused
+                // TextField inside the excluded content can never hold focus or receive keystrokes
+                // (the keyboard flickers in and out). alpha=0 keeps it out of the captured frame
+                // while leaving focus and the input connection untouched.
+                if (excluded.alpha > 0f) {
+                    dimmedViews.add(excluded to excluded.alpha)
+                    excluded.alpha = 0f
                 }
             }
 
@@ -141,6 +147,9 @@ class SurfaceTextureCapture {
         } finally {
             for (hidden in hiddenViews) {
                 hidden.visibility = View.VISIBLE
+            }
+            for ((dimmed, originalAlpha) in dimmedViews) {
+                dimmed.alpha = originalAlpha
             }
             isCapturing = false
         }

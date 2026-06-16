@@ -39,15 +39,19 @@ class DecorViewCapture : ContentCapture {
             return false
         }
 
-        val hiddenViews = mutableListOf<View>()
+        val dimmedViews = mutableListOf<Pair<View, Float>>()
 
         try {
             isCapturing = true
 
             for (view in excludedViews) {
-                if (view.visibility == View.VISIBLE) {
-                    view.visibility = View.INVISIBLE
-                    hiddenViews.add(view)
+                // Exclude via alpha, NOT visibility. Setting an excluded view INVISIBLE clears its
+                // focus and tears down the IME input connection on every capture frame, so a focused
+                // TextField inside the excluded content can never hold focus or receive keystrokes.
+                // alpha=0 keeps it out of the captured bitmap while leaving focus untouched.
+                if (view.alpha > 0f) {
+                    dimmedViews.add(view to view.alpha)
+                    view.alpha = 0f
                 }
             }
 
@@ -78,8 +82,8 @@ class DecorViewCapture : ContentCapture {
         } catch (e: Exception) {
             return false
         } finally {
-            for (view in hiddenViews) {
-                view.visibility = View.VISIBLE
+            for ((view, originalAlpha) in dimmedViews) {
+                view.alpha = originalAlpha
             }
             isCapturing = false
         }

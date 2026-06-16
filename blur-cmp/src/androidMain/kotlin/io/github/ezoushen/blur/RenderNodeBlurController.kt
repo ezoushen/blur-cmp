@@ -130,6 +130,7 @@ class RenderNodeBlurController {
         // Hide BlurView + excluded views during capture to prevent
         // them from appearing in the blurred output.
         val hiddenViews = mutableListOf<View>()
+        val dimmedViews = mutableListOf<Pair<View, Float>>()
         try {
             isCurrentlyCapturing = true
 
@@ -138,9 +139,14 @@ class RenderNodeBlurController {
                 hiddenViews.add(view)
             }
             for (excluded in excludedViews) {
-                if (excluded.visibility == View.VISIBLE) {
-                    excluded.visibility = View.INVISIBLE
-                    hiddenViews.add(excluded)
+                // Exclude via alpha, NOT visibility. Setting an excluded view INVISIBLE clears its
+                // focus and tears down the IME input connection on every capture frame, so a focused
+                // TextField inside the excluded content can never hold focus or receive keystrokes.
+                // alpha=0 drops it from the captured display list (composite-time, honored even with
+                // cached display lists) while leaving focus and the input connection untouched.
+                if (excluded.alpha > 0f) {
+                    dimmedViews.add(excluded to excluded.alpha)
+                    excluded.alpha = 0f
                 }
             }
 
@@ -157,6 +163,9 @@ class RenderNodeBlurController {
         } finally {
             for (hidden in hiddenViews) {
                 hidden.visibility = View.VISIBLE
+            }
+            for ((dimmed, originalAlpha) in dimmedViews) {
+                dimmed.alpha = originalAlpha
             }
             isCurrentlyCapturing = false
         }
