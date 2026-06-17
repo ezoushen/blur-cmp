@@ -1,7 +1,11 @@
 package io.github.ezoushen.blur.cmp
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusManager
+import androidx.compose.ui.platform.LocalFocusManager
 
 /**
  * A composable that blurs its [background] and renders [content] sharply on top.
@@ -69,6 +73,43 @@ fun BlurOverlayHost(
 internal val EmptyBackground: @Composable () -> Unit = {}
 
 /**
+ * Receiver scope for [BlurOverlay] content.
+ *
+ * On Android the overlay's content is hosted in a nested compose view — a separate focus/input
+ * root from the host window — so it does not share the host's focus/IME lifecycle. When the overlay
+ * is dismissed by removing it from composition, a field inside the content that still holds focus
+ * has its input session torn down only after the root is already detached, which can leave the soft
+ * keyboard on screen without an input connection.
+ *
+ * [dismiss] closes that gap: it releases focus from the hosted content *first* — while the content
+ * is still composed and attached — so Compose runs the normal focus/input teardown (hiding the
+ * keyboard) before the caller tears the overlay down. Route any user-initiated dismissal (scrim
+ * tap, close button) through it. Content that never takes focus can ignore this scope entirely;
+ * clearing focus on a subtree that holds none is a no-op.
+ */
+@Stable
+interface BlurOverlayScope {
+    /**
+     * Releases focus from the hosted content, then invokes [andThen] (typically the caller's
+     * dismissal — popping the overlay, finishing, etc.).
+     */
+    fun dismiss(andThen: () -> Unit)
+}
+
+private class BlurOverlayScopeImpl(
+    private val focusManager: FocusManager,
+) : BlurOverlayScope {
+    override fun dismiss(andThen: () -> Unit) {
+        // Clear focus while the content is still composed/attached so Compose's own focus-out →
+        // input-session teardown runs through its standard path (which hides the IME). This is
+        // generic focus management — no reference to the input-method service, no assumption about
+        // what the content is.
+        focusManager.clearFocus(force = true)
+        andThen()
+    }
+}
+
+/**
  * Backdrop blur overlay.
  *
  * When [onDismissRequest] is `null` the overlay renders inline in the
@@ -86,21 +127,32 @@ internal val EmptyBackground: @Composable () -> Unit = {}
  * Pass [onDismissRequest] whenever the overlay represents a stand-alone
  * presentation (menu, sheet, fullscreen blur backdrop); omit it when the
  * overlay is composed inline as one element of a larger compose tree.
+ *
+ * [content] runs with a [BlurOverlayScope] receiver; call [BlurOverlayScope.dismiss] for
+ * user-initiated dismissals so a focused field's keyboard is torn down cleanly (see
+ * [BlurOverlayScope]). Content that never takes focus can ignore the receiver.
  */
 @Composable
 fun BlurOverlay(
     state: BlurOverlayState,
     modifier: Modifier = Modifier,
     onDismissRequest: (() -> Unit)? = null,
-    content: @Composable () -> Unit,
+    content: @Composable BlurOverlayScope.() -> Unit,
 ) {
+    // Build the scope from the focus manager of the composition that actually hosts [content]
+    // (the nested compose root on Android), so dismiss() clears focus in the right root.
+    val hosted: @Composable () -> Unit = {
+        val focusManager = LocalFocusManager.current
+        val scope = remember(focusManager) { BlurOverlayScopeImpl(focusManager) }
+        scope.content()
+    }
     if (onDismissRequest != null) {
         BackdropBlurDialog(onDismissRequest = onDismissRequest) {
             BlurOverlayHost(
                 state = state,
                 modifier = modifier,
                 background = EmptyBackground,
-                content = content,
+                content = hosted,
             )
         }
     } else {
@@ -108,7 +160,7 @@ fun BlurOverlay(
             state = state,
             modifier = modifier,
             background = EmptyBackground,
-            content = content,
+            content = hosted,
         )
     }
 }
