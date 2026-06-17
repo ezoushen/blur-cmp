@@ -35,6 +35,14 @@ import io.github.ezoushen.blur.cmp.rememberBlurOverlayState
 expect fun presentBlurWindowDialog()
 
 /**
+ * Whether the platform supports the separated (window) mode demo. iOS hosts the
+ * dialog in a dedicated Alert-level `UIWindow`; Android has no equivalent (a second
+ * GL backdrop blur cannot coexist with the screen's existing one — shared EGL
+ * context), so the entry point is hidden there. See [presentBlurWindowDialog].
+ */
+expect val supportsWindowMode: Boolean
+
+/**
  * Dialog content shown inside the separated window. No dark scrim — the area
  * around the card is left transparent so the blur (or absence of it) behind the
  * card is directly observable.

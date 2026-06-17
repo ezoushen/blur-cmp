@@ -19,6 +19,8 @@ import platform.UIKit.didMoveToParentViewController
 
 private var dialogWindow: UIWindow? = null
 
+actual val supportsWindowMode: Boolean = true
+
 /**
  * Mirrors stforestkit's `IosDialogManager.ensureDialogWindow`: spin up a single
  * Alert-level [UIWindow], host a [ComposeUIViewController] that injects

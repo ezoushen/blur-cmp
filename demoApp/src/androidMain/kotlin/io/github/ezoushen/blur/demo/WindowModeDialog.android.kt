@@ -7,3 +7,6 @@ package io.github.ezoushen.blur.demo
 actual fun presentBlurWindowDialog() {
     // no-op on Android
 }
+
+/** Window mode is iOS-only; hide the demo entry point on Android. */
+actual val supportsWindowMode: Boolean = false
