@@ -206,6 +206,13 @@ private fun IntegratedBlurOverlay(
         blurState.applyAlpha(state.alpha)
     }
 
+    // Touch pass-through: the container view is the UIKit hit-test target for the whole
+    // window while mounted; dropping its userInteractionEnabled releases every touch to
+    // the surface beneath (see BlurOverlayState.isInteractionEnabled).
+    LaunchedEffect(state.isInteractionEnabled) {
+        blurState.applyInteractionEnabled(state.isInteractionEnabled)
+    }
+
     Box(modifier = modifier) {
         background()
     }
@@ -241,6 +248,11 @@ internal class IosBlurState {
 
     fun applyAlpha(alpha: Float) {
         container?.setAlpha(alpha.toDouble())
+    }
+
+    /** Integrated mode: gate ALL touch interception by the native container (and its children). */
+    fun applyInteractionEnabled(enabled: Boolean) {
+        containerViewController?.view?.setUserInteractionEnabled(enabled)
     }
 
     /**

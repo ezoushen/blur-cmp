@@ -19,6 +19,18 @@ class BlurOverlayState internal constructor(initialConfig: BlurOverlayConfig) {
 
     var alpha: Float by mutableStateOf(1f)
 
+    /**
+     * Whether the overlay's hosting layer intercepts touches. Matters on iOS integrated mode,
+     * where the overlay is a native full-screen container (backdrop + nested content VC) above
+     * the app's Compose surface: while it exists, UIKit routes every touch to it, so content
+     * beneath is unreachable even when the overlay is only animating out. Set `false` to let
+     * touches pass through to the surface beneath — typically for the overlay's exit window,
+     * so the revealed screen is interactive the moment the dismissal starts rather than after
+     * the native teardown. In-tree hosts (Android, iOS injected-window content) render inline
+     * and don't intercept beyond their own hit-testable content, so this is a no-op there.
+     */
+    var isInteractionEnabled: Boolean by mutableStateOf(true)
+
     /** Convenience: update radius only. */
     fun setRadius(radius: Float) {
         config = config.copy(radius = radius)
