@@ -26,6 +26,8 @@ import platform.UIKit.UIViewAutoresizingFlexibleHeight
 import platform.UIKit.UIViewAutoresizingFlexibleWidth
 import platform.UIKit.UIViewController
 import platform.UIKit.addChildViewController
+import platform.UIKit.beginAppearanceTransition
+import platform.UIKit.endAppearanceTransition
 import platform.UIKit.childViewControllers
 import platform.UIKit.didMoveToParentViewController
 import platform.UIKit.removeFromParentViewController
@@ -187,7 +189,16 @@ private fun IntegratedBlurOverlay(
             )
 
             containerVC.addChildViewController(contentVC)
+            // Balanced, synchronous appearance pair around the view add. UIKit does NOT send
+            // appearance callbacks automatically when a child is added to an already-visible
+            // parent; without the explicit pair the nested ComposeVC's appearance state drifts and
+            // CMP's internal ComposeLayersViewController logs "Unbalanced calls to begin/end
+            // appearance transitions" per present/dismiss — under rapid churn that suspends the
+            // host Compose scene outright (frozen rendering + input). The pair settles the
+            // ComposeVC to "appeared" before anything else runs.
+            contentVC.beginAppearanceTransition(true, animated = false)
             containerVC.view.addSubview(contentVC.view) // added last → above the backdrop
+            contentVC.endAppearanceTransition()
             contentVC.didMoveToParentViewController(containerVC)
 
             blurState.containerViewController = containerVC
@@ -458,7 +469,12 @@ internal class IosBlurState {
             for (child in cvc.childViewControllers) {
                 (child as? UIViewController)?.let { childVC ->
                     childVC.willMoveToParentViewController(null)
+                    // Balanced, synchronous disappearance pair (mirrors the add — see
+                    // IntegratedBlurOverlay): UIKit sends nothing automatically for a child view
+                    // removed from a visible parent, and CMP's appearance bookkeeping drifts.
+                    childVC.beginAppearanceTransition(false, animated = false)
                     childVC.view.removeFromSuperview()
+                    childVC.endAppearanceTransition()
                     childVC.removeFromParentViewController()
                 }
             }
