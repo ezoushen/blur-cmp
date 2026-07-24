@@ -1,5 +1,12 @@
 # blur-cmp
 
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.ezoushen/blur-cmp?color=blue)](https://central.sonatype.com/artifact/io.github.ezoushen/blur-cmp)
+[![Kotlin](https://img.shields.io/badge/kotlin-2.3.20-purple?logo=kotlin)](https://kotlinlang.org)
+[![Compose Multiplatform](https://img.shields.io/badge/Compose_Multiplatform-1.11.0-8E2DE2)](https://www.jetbrains.com/lp/compose-multiplatform/)
+[![Platform](https://img.shields.io/badge/platform-Android%20%7C%20iOS-brightgreen)](#)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+[![CI](https://github.com/ezoushen/blur-cmp/actions/workflows/check.yml/badge.svg)](https://github.com/ezoushen/blur-cmp/actions/workflows/check.yml)
+
 Real-time native backdrop blur for Compose Multiplatform (Android + iOS).
 
 Blurs whatever is behind it in the view hierarchy — like iOS `UIVisualEffectView` or CSS `backdrop-filter`, but cross-platform with a single Compose API.
@@ -264,6 +271,18 @@ Uses `CABackdropLayer` extracted from `UIVisualEffectView`:
 - **iOS**: 15+ on iosArm64 and iosSimulatorArm64
 
 Compose Multiplatform 1.11.0 no longer publishes Apple x86_64 artifacts. Projects that need the Intel iOS simulator target must stay on the last 0.7.x blur-cmp line or maintain a separate legacy build.
+
+## Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+- [Bug reports](.github/ISSUE_TEMPLATE/bug_report.yml) — reproduce and fix issues
+- [Feature requests](.github/ISSUE_TEMPLATE/feature_request.yml) — suggest improvements
+- [Pull requests](https://github.com/ezoushen/blur-cmp/pulls) — code contributions
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ## License
 
