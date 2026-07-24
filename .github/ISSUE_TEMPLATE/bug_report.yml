@@ -1,0 +1,87 @@
+name: Bug Report
+description: File a bug report to help improve blur-cmp
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report! Please provide as much detail as possible to help us reproduce and fix the issue.
+
+  - type: input
+    id: blur_cmp_version
+    attributes:
+      label: blur-cmp version
+      description: What version of blur-cmp are you using?
+      placeholder: "e.g., 0.9.3"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: Which platform(s) does the bug affect?
+      multiple: true
+      options:
+        - Android
+        - iOS
+        - Both
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug description
+      description: A clear and concise description of the bug
+      placeholder: What happened? What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to reproduce the behavior
+      placeholder: |
+        1. Create BlurOverlay with '...'
+        2. Set config to '....'
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: code
+    attributes:
+      label: Minimal reproduction code
+      description: A minimal code snippet that demonstrates the issue
+      render: kotlin
+
+  - type: input
+    id: device
+    attributes:
+      label: Device / Emulator
+      description: What device or emulator were you testing on?
+      placeholder: "e.g., Pixel 9, iPhone 15 Pro Simulator, Android Emulator API 35"
+
+  - type: input
+    id: os_version
+    attributes:
+      label: OS version
+      placeholder: "e.g., Android 15, iOS 18.0"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or stack trace
+      description: Copy and paste any relevant log output
+      render: shell
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      description: By submitting this issue, you agree to follow our [Code of Conduct](../blob/main/CODE_OF_CONDUCT.md)
+      options:
+        - label: I agree to follow this project's Code of Conduct
+          required: true
