@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+- Raise Android minSdk to 24 so every supported device has reliable
+  `SurfaceView` capture through `PixelCopy`.
+- fix(android): compose sibling and nested blur overlays from every lower layer
+- fix(android): retain SurfaceView frames until asynchronous window capture completes
+- feat(android): register pre-36 SurfaceView compositor order for exact replay
+- test(android): cover independent bounds, three-layer composition, and per-layer liveness
+
 ## [0.9.3] — 2026-07-23
 
 - fix(ios): balance nested ComposeVC appearance transitions

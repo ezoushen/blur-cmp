@@ -7,10 +7,14 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
 import android.os.Build
+import android.view.SurfaceView
 import android.view.View
+import android.view.Window
 import io.github.ezoushen.blur.algorithm.VariableOpenGLBlur
 import io.github.ezoushen.blur.capture.ContentCapture
+import io.github.ezoushen.blur.capture.BackdropCaptureSource
 import io.github.ezoushen.blur.capture.DecorViewCapture
+import io.github.ezoushen.blur.capture.SurfaceCapture
 import io.github.ezoushen.blur.capture.SurfaceTextureCapture
 import io.github.ezoushen.blur.cmp.TintOrder
 import io.github.ezoushen.blur.util.BitmapPool
@@ -165,7 +169,9 @@ class VariableBlurController(
      * Use this in the blur view's draw() method to prevent infinite recursion.
      */
     fun isCapturing(): Boolean {
-        return (capture as? DecorViewCapture)?.isCurrentlyCapturing() == true
+        return (capture as? DecorViewCapture)?.isCurrentlyCapturing() == true ||
+            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                surfaceTextureCapture?.isCurrentlyCapturing() == true)
     }
 
     fun addExcludedView(view: View) {
@@ -186,6 +192,16 @@ class VariableBlurController(
         }
     }
 
+    fun setSourceWindow(window: Window?) {
+        (capture as? DecorViewCapture)?.setSourceWindow(window)
+        contentDirty = true
+    }
+
+    internal fun setCaptureSources(sources: List<BackdropCaptureSource>?) {
+        (capture as? DecorViewCapture)?.setCaptureSources(sources)
+        contentDirty = true
+    }
+
     fun setOutputSurface(surface: android.view.Surface?, width: Int = 0, height: Int = 0) {
         algorithm.setSurface(surface, width, height)
     }
@@ -197,6 +213,11 @@ class VariableBlurController(
      * Resolves the pipeline strategy based on config and device capabilities.
      */
     private fun resolveStrategy(): BlurPipelineStrategy {
+        if (config.pipelineStrategy == BlurPipelineStrategy.AUTO &&
+            sourceView?.let(SurfaceCapture::findSurfaceViews)?.any { it is SurfaceView } == true
+        ) {
+            return BlurPipelineStrategy.LEGACY
+        }
         resolvedStrategy?.let { return it }
 
         val requested = config.pipelineStrategy
@@ -265,6 +286,9 @@ class VariableBlurController(
         }
 
         val strategy = resolveStrategy()
+        if (strategy != BlurPipelineStrategy.SURFACE_TEXTURE) {
+            algorithm.setExternalInputEnabled(false)
+        }
         val t0 = if (BlurPerfMonitor.enabled) System.nanoTime() else 0L
         val success = if (contentDirty) {
             when (strategy) {
@@ -309,6 +333,8 @@ class VariableBlurController(
         scaledWidth: Int, scaledHeight: Int,
         scaledMaxRadius: Float, effectiveDownsample: Float
     ): Boolean {
+        algorithm.setExternalInputEnabled(false)
+
         if (captureBitmap == null ||
             captureBitmap?.width != scaledWidth ||
             captureBitmap?.height != scaledHeight
@@ -367,6 +393,7 @@ class VariableBlurController(
             return updateLegacy(view, source, scaledWidth, scaledHeight, scaledMaxRadius, effectiveDownsample)
         }
 
+        algorithm.setExternalInputEnabled(true)
         val blurInput = captureBitmap ?: run {
             captureBitmap = bitmapPool.acquire(scaledWidth, scaledHeight)
             captureBitmap
@@ -421,6 +448,10 @@ class VariableBlurController(
         canvas.drawRect(0f, 0f, view.width.toFloat(), view.height.toFloat(), tintPaint)
     }
 
+    fun drawPostBlurTint(canvas: Canvas) {
+        if (config.tintOrder == TintOrder.POST_BLUR) drawTint(canvas)
+    }
+
     /**
      * Draws the blurred content and optional post-blur tint to the canvas.
      *
@@ -436,9 +467,7 @@ class VariableBlurController(
         dstRect.set(0, 0, view.width, view.height)
         canvas.drawBitmap(blurred, srcRect, dstRect, paint)
 
-        if (config.tintOrder == TintOrder.POST_BLUR) {
-            drawTint(canvas)
-        }
+        drawPostBlurTint(canvas)
     }
 
     /**
@@ -456,7 +485,6 @@ class VariableBlurController(
         surfaceTextureCapture = null
         pendingStExcludedViews.clear()
         resolvedStrategy = null
-
         captureBitmap?.let { bitmapPool.release(it) }
         captureBitmap = null
 

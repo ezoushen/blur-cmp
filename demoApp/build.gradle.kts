@@ -38,7 +38,18 @@ kotlin {
         androidMain.dependencies {
             implementation(libs.androidx.activity.compose)
         }
+        androidInstrumentedTest.dependencies {
+            implementation(kotlin("test"))
+            implementation(libs.androidx.test.core)
+            implementation(libs.androidx.test.runner)
+            implementation(libs.androidx.test.ext.junit)
+            implementation(libs.androidx.compose.ui.test.junit4.android)
+        }
     }
+}
+
+dependencies {
+    add("debugImplementation", libs.androidx.compose.ui.test.manifest)
 }
 
 // ── iOS Simulator run task ─────────────────────────────────────────────
@@ -156,10 +167,11 @@ android {
     compileSdk = 35
     defaultConfig {
         applicationId = "io.github.ezoushen.blur.demo"
-        minSdk = 23
+        minSdk = 24
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11

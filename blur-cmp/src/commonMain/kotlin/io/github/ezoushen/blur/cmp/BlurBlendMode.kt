@@ -5,7 +5,7 @@ package io.github.ezoushen.blur.cmp
  *
  * All 12 modes are supported on both platforms:
  * - Android API 29+: full native support via android.graphics.BlendMode
- * - Android API 23-28: Normal, Multiply, Screen, Overlay, Darken, Lighten
+ * - Android API 24-28: Normal, Multiply, Screen, Overlay, Darken, Lighten
  *   natively; others gracefully degrade to Normal
  * - iOS 15+: full native support via CALayer compositingFilter
  */

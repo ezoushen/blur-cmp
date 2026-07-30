@@ -12,20 +12,23 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
+import io.github.ezoushen.blur.BlurPipelineStrategy
 import io.github.ezoushen.blur.view.BlurView
 import io.github.ezoushen.blur.view.VariableBlurView
 
@@ -54,6 +57,17 @@ actual fun BlurOverlayHost(
     content: @Composable () -> Unit,
 ) {
     val config = state.config
+    val backdropStack = LocalAndroidBackdropStack.current
+    val rememberedBackdropLayer = remember { AndroidBackdropLayer() }
+    val backdropLayer = backdropStack?.currentLayer ?: rememberedBackdropLayer
+    DisposableEffect(backdropLayer) {
+        backdropLayer.claim()
+        onDispose {
+            backdropLayer.release()
+        }
+    }
+    val lowerLayers = backdropStack?.lowerLayers.orEmpty()
+    val lowerLayersReady = lowerLayers.all { it.isReady }
 
     Box(modifier = modifier) {
         background()
@@ -82,8 +96,16 @@ actual fun BlurOverlayHost(
                 config.gradient == null &&
                 background !== EmptyBackground
             ) {
+                SideEffect {
+                    backdropLayer.captureView = null
+                    backdropLayer.isReady = true
+                }
                 RenderEffectBlurOverlay(state, background)
-                content()
+                ContentOverlay(
+                    blurView = null,
+                    backdropStack = backdropStack,
+                    content = content,
+                )
                 return@Box
             }
 
@@ -92,10 +114,42 @@ actual fun BlurOverlayHost(
 
             if (gradient != null) {
                 val context = LocalContext.current
-                val blurView = remember { VariableBlurView(context) }
+                val blurView = remember {
+                    VariableBlurView(context).apply {
+                        if (backdropStack != null) disableDirectSurfaceOutput()
+                        setBlurEnabled(lowerLayers.isEmpty())
+                        setIsLive(config.isLive && state.alpha > 0f)
+                    }
+                }
 
-                DisposableEffect(Unit) {
-                    onDispose { blurView.setIsLive(false) }
+                SideEffect {
+                    val captureView = blurView.takeIf { config.radius >= 1f }
+                    if (backdropLayer.captureView !== captureView) {
+                        backdropLayer.captureView = captureView
+                        backdropLayer.isReady = blurView.hasFirstFrame()
+                    }
+                    if (captureView == null) backdropLayer.isReady = true
+                }
+                DisposableEffect(blurView, backdropStack != null) {
+                    blurView.setOnFirstFrameListener {
+                        backdropLayer.isReady = true
+                    }
+                    blurView.setOnFrameLostListener {
+                        backdropLayer.isReady = false
+                    }
+                    onDispose {
+                        blurView.setOnFirstFrameListener(null)
+                        blurView.setOnFrameLostListener(null)
+                        blurView.setIsLive(false)
+                        backdropLayer.captureView = null
+                        backdropLayer.isReady = true
+                    }
+                }
+                SideEffect {
+                    val stack = backdropStack
+                    if (stack != null && background === EmptyBackground) {
+                        blurView.setBlurredWindows(stack.captureSources)
+                    }
                 }
 
                 AndroidView(
@@ -104,7 +158,15 @@ actual fun BlurOverlayHost(
                     update = { view ->
                         val blurGradient = AndroidGradientMapper.toBlurGradient(gradient, config.radius)
                         view.setBlurGradient(blurGradient)
-                        view.setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
+                        view.setBlurConfig(
+                            AndroidGradientMapper.toBlurConfig(config).copy(
+                                pipelineStrategy = if (backdropStack != null) {
+                                    BlurPipelineStrategy.LEGACY
+                                } else {
+                                    BlurPipelineStrategy.AUTO
+                                },
+                            ),
+                        )
                         view.alpha = state.alpha
                     },
                 )
@@ -116,13 +178,25 @@ actual fun BlurOverlayHost(
                     prevAlpha = state.alpha
                 }
 
+                LaunchedEffect(lowerLayersReady) {
+                    if (lowerLayers.isEmpty()) return@LaunchedEffect
+                    withFrameNanos {}
+                    val ready = lowerLayers.all { it.isReady }
+                    blurView.setBlurEnabled(ready)
+                    if (ready) blurView.requestSingleUpdate()
+                }
+
                 // Honor BlurOverlayState.requestUpdate() in non-live mode:
                 // increment of updateTrigger forces a one-shot recapture.
                 LaunchedEffect(state.updateTrigger) {
-                    blurView.requestSingleUpdate()
+                    if (state.updateTrigger != 0L) blurView.requestSingleUpdate()
                 }
 
-                ContentOverlay(blurView = blurView, content = content)
+                ContentOverlay(
+                    blurView = blurView,
+                    backdropStack = backdropStack,
+                    content = content,
+                )
             } else {
                 val isBackdropMode = background === EmptyBackground
                 val context = LocalContext.current
@@ -130,33 +204,56 @@ actual fun BlurOverlayHost(
                     // Backdrop blur captures the DecorView every frame. The
                     // RenderNode path's syncAndDraw blocks the main thread for
                     // seconds on complex hierarchies — use Kawase instead.
-                    if (isBackdropMode) BlurView.kawase(context) else BlurView(context)
+                    (if (isBackdropMode) BlurView.kawase(context) else BlurView(context)).apply {
+                        if (backdropStack != null) disableDirectSurfaceOutput()
+                        setBlurEnabled(lowerLayers.isEmpty())
+                        setIsLive(config.isLive && state.alpha > 0f)
+                    }
                 }
 
-                // Gate the BlurView's compose layer on the GL pipeline producing
-                // its first frame. Before that frame lands the underlying
-                // TextureView surface is opaque on some devices (Adreno, Mali),
-                // which reads as a black flash on cold mount of a backdrop blur.
-                // `Modifier.alpha` collapses the compose layer to fully
-                // transparent until [BlurView.setOnFirstFrameListener] fires.
-                var firstFrameReady by remember(blurView) {
-                    mutableStateOf(blurView.hasFirstFrame())
+                SideEffect {
+                    val captureView = blurView.takeIf { config.radius >= 1f }
+                    if (backdropLayer.captureView !== captureView) {
+                        backdropLayer.captureView = captureView
+                        backdropLayer.isReady = blurView.hasFirstFrame()
+                    }
+                    if (captureView == null) backdropLayer.isReady = true
                 }
-                DisposableEffect(blurView) {
-                    blurView.setOnFirstFrameListener { firstFrameReady = true }
+                DisposableEffect(blurView, backdropStack != null) {
+                    blurView.setOnFirstFrameListener {
+                        backdropLayer.isReady = true
+                    }
+                    blurView.setOnFrameLostListener {
+                        backdropLayer.isReady = false
+                    }
                     onDispose {
                         blurView.setOnFirstFrameListener(null)
+                        blurView.setOnFrameLostListener(null)
                         blurView.setIsLive(false)
+                        backdropLayer.captureView = null
+                        backdropLayer.isReady = true
+                    }
+                }
+                SideEffect {
+                    val stack = backdropStack
+                    if (stack != null && isBackdropMode) {
+                        blurView.setBlurredWindows(stack.captureSources)
                     }
                 }
 
                 AndroidView(
                     factory = { blurView },
-                    modifier = Modifier
-                        .matchParentSize()
-                        .alpha(if (firstFrameReady) 1f else 0f),
+                    modifier = Modifier.matchParentSize(),
                     update = { view ->
-                        view.setBlurConfig(AndroidGradientMapper.toBlurConfig(config))
+                        view.setBlurConfig(
+                            AndroidGradientMapper.toBlurConfig(config).copy(
+                                pipelineStrategy = if (backdropStack != null) {
+                                    BlurPipelineStrategy.LEGACY
+                                } else {
+                                    BlurPipelineStrategy.AUTO
+                                },
+                            ),
+                        )
                         view.alpha = state.alpha
                     },
                 )
@@ -168,14 +265,34 @@ actual fun BlurOverlayHost(
                     prevAlpha = state.alpha
                 }
 
-                LaunchedEffect(state.updateTrigger) {
-                    blurView.requestSingleUpdate()
+                LaunchedEffect(lowerLayersReady) {
+                    if (lowerLayers.isEmpty()) return@LaunchedEffect
+                    withFrameNanos {}
+                    val ready = lowerLayers.all { it.isReady }
+                    blurView.setBlurEnabled(ready)
+                    if (ready) blurView.requestSingleUpdate()
                 }
 
-                ContentOverlay(blurView = blurView, content = content)
+                LaunchedEffect(state.updateTrigger) {
+                    if (state.updateTrigger != 0L) blurView.requestSingleUpdate()
+                }
+
+                ContentOverlay(
+                    blurView = blurView,
+                    backdropStack = backdropStack,
+                    content = content,
+                )
             }
         } else {
-            content()
+            SideEffect {
+                backdropLayer.captureView = null
+                backdropLayer.isReady = true
+            }
+            ContentOverlay(
+                blurView = null,
+                backdropStack = backdropStack,
+                content = content,
+            )
         }
     }
 }
@@ -262,23 +379,33 @@ private fun buildBlurRenderEffect(radius: Float, config: BlurOverlayConfig): Ren
 
 @Composable
 private fun BoxScope.ContentOverlay(
-    blurView: View,
+    blurView: View?,
+    backdropStack: AndroidBackdropStack?,
     content: @Composable () -> Unit,
 ) {
     val contentHolder = remember { AndroidContentHolder() }
     contentHolder.content = content
+    contentHolder.stack = backdropStack
 
     AndroidView(
         factory = { ctx ->
             val container = FrameLayout(ctx)
             val composeView = ComposeView(ctx).apply {
-                setContent { contentHolder.content() }
+                setContent {
+                    CompositionLocalProvider(
+                        LocalAndroidBackdropStack provides contentHolder.stack,
+                    ) {
+                        Box(Modifier.fillMaxSize()) {
+                            contentHolder.content()
+                        }
+                    }
+                }
             }
             container.addView(
                 composeView,
                 FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
                 )
             )
             when (blurView) {
@@ -287,7 +414,7 @@ private fun BoxScope.ContentOverlay(
             }
             container
         },
-        modifier = Modifier,
+        modifier = Modifier.matchParentSize(),
         onRelease = { container ->
             when (blurView) {
                 is BlurView -> blurView.removeExcludedView(container)
@@ -299,4 +426,5 @@ private fun BoxScope.ContentOverlay(
 
 private class AndroidContentHolder {
     var content: @Composable () -> Unit by mutableStateOf({})
+    var stack: AndroidBackdropStack? by mutableStateOf(null)
 }

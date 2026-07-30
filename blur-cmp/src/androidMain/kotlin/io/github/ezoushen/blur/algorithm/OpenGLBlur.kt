@@ -47,7 +47,7 @@ private data class BlurParams(
  *
  * **Performance:** ~5-10× faster than RenderScript Gaussian blur.
  *
- * Supported API: 23+ (minSdk)
+ * Supported API: 24+ (minSdk)
  * Max blur radius: Unlimited (controlled by iteration count)
  */
 class OpenGLBlur @JvmOverloads constructor(
@@ -94,6 +94,7 @@ class OpenGLBlur @JvmOverloads constructor(
 
     // External OES texture for SurfaceTexture input (API 26+)
     private var externalInputTexture = 0
+    private var externalInputEnabled = false
 
     private var framebuffers: IntArray? = null
     private var textures: IntArray? = null
@@ -145,6 +146,11 @@ class OpenGLBlur @JvmOverloads constructor(
                 isInitialized = true
             }
 
+            // Multiple stacked blur controllers share the UI thread but own
+            // separate EGL contexts. Re-bind ours before SurfaceTexture
+            // capture calls updateTexImage().
+            if (!makeCurrent()) return false
+
             // Bind a pending output Surface whenever one is queued and not yet
             // bound. Runs every prepare() (not just first init) so that a
             // late-arriving Surface from TextureView re-attach is honored
@@ -155,9 +161,6 @@ class OpenGLBlur @JvmOverloads constructor(
             }
 
             if (lastWidth != width || lastHeight != height) {
-                // CRITICAL: Must make context current before any GL operations
-                if (!makeCurrent()) return false
-
                 releaseFramebuffers()
                 if (!initFramebuffers(width, height)) return false
 
@@ -205,7 +208,10 @@ class OpenGLBlur @JvmOverloads constructor(
 
             // Determine input source: zero-copy EGLImage, external OES, or legacy texImage2D
             val hasEglImageInput = inputTexture != 0 && currentEglImage != null
-            val hasExternalInput = externalInputTexture != 0 && downsampleExternalProgram != 0
+            val hasExternalInput =
+                externalInputEnabled &&
+                    externalInputTexture != 0 &&
+                    downsampleExternalProgram != 0
             val startTexture: Int
             val useExternalInput: Boolean
 
@@ -664,6 +670,10 @@ class OpenGLBlur @JvmOverloads constructor(
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
         return externalInputTexture
+    }
+
+    fun setExternalInputEnabled(enabled: Boolean) {
+        externalInputEnabled = enabled
     }
 
     private fun initShaders(): Boolean {

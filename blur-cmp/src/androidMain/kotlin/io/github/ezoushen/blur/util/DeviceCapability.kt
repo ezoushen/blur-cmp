@@ -109,7 +109,7 @@ object DeviceCapability {
      * Checks if RenderScript is available.
      * RenderScript was deprecated in API 31, but can still be used
      * with degraded performance (no hardware acceleration).
-     * Always returns true since minSdk is 23.
+     * Always returns true since minSdk is 24.
      */
     fun supportsRenderScript(): Boolean = true
 
