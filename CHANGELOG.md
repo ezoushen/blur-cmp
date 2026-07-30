@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-07-30
+
 - Raise Android minSdk to 24 so every supported device has reliable
   `SurfaceView` capture through `PixelCopy`.
 - fix(android): compose sibling and nested blur overlays from every lower layer
