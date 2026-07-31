@@ -93,6 +93,7 @@ class BlurView private constructor(
     // For tracking rendering state to prevent infinite recursion
     private var isRendering = false
     private var hasFirstFrame = false
+    private var hasRenderedToOutputSurface = false
     private var blurTextureView: TextureView? = null
     private var blurSurface: Surface? = null
     private var liveUpdatePosted = false
@@ -103,11 +104,19 @@ class BlurView private constructor(
         override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
             blurSurface?.release()
             blurSurface = Surface(st)
+            hasFirstFrame = false
+            hasRenderedToOutputSurface = false
+            blurTextureView?.alpha = 0f
+            frameLostListener?.invoke()
             blurController?.setOutputSurface(blurSurface, w, h)
         }
         override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
             blurSurface?.release()
             blurSurface = Surface(st)
+            hasFirstFrame = false
+            hasRenderedToOutputSurface = false
+            blurTextureView?.alpha = 0f
+            frameLostListener?.invoke()
             blurController?.setOutputSurface(blurSurface, w, h)
         }
         override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
@@ -115,37 +124,23 @@ class BlurView private constructor(
             blurSurface?.release()
             blurSurface = null
             hasFirstFrame = false
+            hasRenderedToOutputSurface = false
             blurTextureView?.alpha = 0f
             frameLostListener?.invoke()
             return true
         }
         override fun onSurfaceTextureUpdated(st: SurfaceTexture) {
-            onFirstFrameAvailable()
+            if (hasRenderedToOutputSurface) onFirstFrameAvailable()
         }
     }
 
     private val drawListener = ViewTreeObserver.OnDrawListener {
-        if (isBlurEnabled && hasFirstFrame) {
-            if (canUseRenderNode() || blurController?.hasPendingDirty() == true) {
-                scheduleBlurUpdate()
-            }
+        if (
+            isBlurEnabled &&
+            (!hasFirstFrame || canUseRenderNode() || blurController?.hasPendingDirty() == true)
+        ) {
+            scheduleBlurUpdate()
         }
-    }
-
-    private val preDrawListener = ViewTreeObserver.OnPreDrawListener {
-        if (isBlurEnabled && !hasFirstFrame) {
-            val updated = if (canUseRenderNode()) {
-                renderNodeController?.update() == true
-            } else {
-                blurController?.update() == true
-            }
-            if (updated) {
-                if (canUseRenderNode() || blurController?.hasOutputSurface() != true) {
-                    onFirstFrameAvailable()
-                }
-            }
-        }
-        true
     }
 
     private val blurUpdate = Runnable {
@@ -158,7 +153,11 @@ class BlurView private constructor(
             blurController?.update() == true
         }
         if (updated) {
-            if (canUseRenderNode() || blurController?.hasOutputSurface() != true) {
+            if (canUseRenderNode()) {
+                onFirstFrameAvailable()
+            } else if (blurController?.hasOutputSurface() == true) {
+                hasRenderedToOutputSurface = true
+            } else {
                 onFirstFrameAvailable()
             }
         }
@@ -591,19 +590,18 @@ class BlurView private constructor(
             // lists contain the current frame. Capturing from pre-draw can
             // consume stale dirty state before Compose records its updates.
             viewTreeObserver?.addOnDrawListener(drawListener)
-            viewTreeObserver?.addOnPreDrawListener(preDrawListener)
             scheduleLiveUpdate()
         }
     }
 
     override fun onDetachedFromWindow() {
         viewTreeObserver?.removeOnDrawListener(drawListener)
-        viewTreeObserver?.removeOnPreDrawListener(preDrawListener)
         removeCallbacks(liveUpdate)
         removeCallbacks(blurUpdate)
         liveUpdatePosted = false
         blurUpdatePosted = false
         hasFirstFrame = false
+        hasRenderedToOutputSurface = false
         blurTextureView?.alpha = 0f
         frameLostListener?.invoke()
 

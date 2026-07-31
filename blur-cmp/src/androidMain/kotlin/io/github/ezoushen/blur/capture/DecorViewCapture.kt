@@ -39,6 +39,7 @@ class DecorViewCapture : ContentCapture {
     private val blurViewLocation = IntArray(2)
     private val surfaceLocation = IntArray(2)
     private val surfacePaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val windowPaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val surfaceClipPath = Path()
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -57,8 +58,6 @@ class DecorViewCapture : ContentCapture {
     private var windowPending = false
     private var windowDeliveryPending = false
     private var windowGeneration = 0
-    private var windowCaptureWidth = 0
-    private var windowCaptureHeight = 0
     private var windowSourceRects = emptyList<Rect>()
     private var windowRetryCount = 0
     private var windowRetry: Runnable? = null
@@ -172,7 +171,12 @@ class DecorViewCapture : ContentCapture {
                     scaleX = scaleX,
                     scaleY = scaleY,
                 ) ?: return false
-                Canvas(output).drawBitmap(captured, 0f, 0f, null)
+                Canvas(output).drawBitmap(
+                    captured,
+                    null,
+                    Rect(0, 0, output.width, output.height),
+                    windowPaint,
+                )
             } else {
                 val canvas = Canvas(output)
                 for (source in sources) {
@@ -288,22 +292,16 @@ class DecorViewCapture : ContentCapture {
     ): Bitmap? {
         val sourceRects = planes.map { Rect(it.sourceRect) }
         val front = windowFront
-        val hasCurrent = front != null && front.width == width && front.height == height &&
-            windowSourceRects == sourceRects
+        val hasCurrent = front != null && windowSourceRects == sourceRects
 
         if (windowDeliveryPending && hasCurrent) {
             windowDeliveryPending = false
             return front
         }
         windowDeliveryPending = false
-        if (windowSourceRects != sourceRects ||
-            windowCaptureWidth != width ||
-            windowCaptureHeight != height
-        ) {
+        if (windowSourceRects != sourceRects) {
             resetWindowCapture()
             windowSourceRects = sourceRects
-            windowCaptureWidth = width
-            windowCaptureHeight = height
         }
         if (!windowPending) {
             requestWindowCopy(
@@ -316,7 +314,7 @@ class DecorViewCapture : ContentCapture {
             )
         }
         return windowFront?.takeIf {
-            it.width == width && it.height == height && windowSourceRects == sourceRects
+            windowSourceRects == sourceRects
         }
     }
 
@@ -513,8 +511,6 @@ class DecorViewCapture : ContentCapture {
         windowFront = null
         windowBack?.recycle()
         windowBack = null
-        windowCaptureWidth = 0
-        windowCaptureHeight = 0
         windowSourceRects = emptyList()
     }
 

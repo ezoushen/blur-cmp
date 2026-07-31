@@ -126,6 +126,7 @@ class StackedBlurOverlayTest {
     fun blurViewHidesRecreatedTextureUntilItsFirstFrame() {
         val view = BlurView.kawase(ApplicationProvider.getApplicationContext())
         assertTextureGateResets(
+            owner = view,
             textureView = view.getChildAt(0) as TextureView,
             hasFirstFrame = view::hasFirstFrame,
             setOnFrameLostListener = view::setOnFrameLostListener,
@@ -136,6 +137,7 @@ class StackedBlurOverlayTest {
     fun variableBlurViewHidesRecreatedTextureUntilItsFirstFrame() {
         val view = VariableBlurView(ApplicationProvider.getApplicationContext())
         assertTextureGateResets(
+            owner = view,
             textureView = view.getChildAt(0) as TextureView,
             hasFirstFrame = view::hasFirstFrame,
             setOnFrameLostListener = view::setOnFrameLostListener,
@@ -2640,6 +2642,7 @@ private fun drawTextureEdgeMarker(textureView: TextureView) {
 }
 
 private fun assertTextureGateResets(
+    owner: Any,
     textureView: TextureView,
     hasFirstFrame: () -> Boolean,
     setOnFrameLostListener: ((() -> Unit)?) -> Unit,
@@ -2649,6 +2652,14 @@ private fun assertTextureGateResets(
     try {
         setOnFrameLostListener { frameLost.set(true) }
         val listener = checkNotNull(textureView.surfaceTextureListener)
+        listener.onSurfaceTextureUpdated(surfaceTexture)
+        assertTrue(!hasFirstFrame(), "An empty update must not claim first-frame readiness")
+        assertTrue(textureView.alpha == 0f, "An empty update must keep the output hidden")
+
+        owner.javaClass.getDeclaredField("hasRenderedToOutputSurface").apply {
+            isAccessible = true
+            setBoolean(owner, true)
+        }
         listener.onSurfaceTextureUpdated(surfaceTexture)
         assertTrue(hasFirstFrame())
         assertTrue(textureView.alpha == 1f)

@@ -74,6 +74,7 @@ class VariableBlurView @JvmOverloads constructor(
     // For tracking rendering state to prevent infinite recursion
     private var isRendering = false
     private var hasFirstFrame = false
+    private var hasRenderedToOutputSurface = false
     private var blurTextureView: TextureView? = null
     private var blurSurface: Surface? = null
     private var liveUpdatePosted = false
@@ -86,11 +87,19 @@ class VariableBlurView @JvmOverloads constructor(
         override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
             blurSurface?.release()
             blurSurface = Surface(st)
+            hasFirstFrame = false
+            hasRenderedToOutputSurface = false
+            blurTextureView?.alpha = 0f
+            frameLostListener?.invoke()
             blurController?.setOutputSurface(blurSurface, w, h)
         }
         override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
             blurSurface?.release()
             blurSurface = Surface(st)
+            hasFirstFrame = false
+            hasRenderedToOutputSurface = false
+            blurTextureView?.alpha = 0f
+            frameLostListener?.invoke()
             blurController?.setOutputSurface(blurSurface, w, h)
         }
         override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
@@ -98,29 +107,23 @@ class VariableBlurView @JvmOverloads constructor(
             blurSurface?.release()
             blurSurface = null
             hasFirstFrame = false
+            hasRenderedToOutputSurface = false
             blurTextureView?.alpha = 0f
             frameLostListener?.invoke()
             return true
         }
         override fun onSurfaceTextureUpdated(st: SurfaceTexture) {
-            onFirstFrameAvailable()
+            if (hasRenderedToOutputSurface) onFirstFrameAvailable()
         }
     }
 
     private val drawListener = ViewTreeObserver.OnDrawListener {
-        if (isBlurEnabled && hasFirstFrame && blurController?.hasPendingDirty() == true) {
+        if (
+            isBlurEnabled &&
+            (!hasFirstFrame || blurController?.hasPendingDirty() == true)
+        ) {
             scheduleBlurUpdate()
         }
-    }
-
-    private val preDrawListener = ViewTreeObserver.OnPreDrawListener {
-        if (isBlurEnabled && !hasFirstFrame && blurController?.update() == true) {
-            if (blurController?.hasOutputSurface() != true) {
-                onFirstFrameAvailable()
-            }
-            invalidate()
-        }
-        true
     }
 
     private val blurUpdate = Runnable {
@@ -128,7 +131,9 @@ class VariableBlurView @JvmOverloads constructor(
         if (!isAttachedToWindow || !isBlurEnabled) return@Runnable
 
         if (blurController?.update() == true) {
-            if (blurController?.hasOutputSurface() != true) {
+            if (blurController?.hasOutputSurface() == true) {
+                hasRenderedToOutputSurface = true
+            } else {
                 onFirstFrameAvailable()
             }
             invalidate()
@@ -510,14 +515,12 @@ class VariableBlurView @JvmOverloads constructor(
             flushPendingExcludedViews()
 
             viewTreeObserver?.addOnDrawListener(drawListener)
-            viewTreeObserver?.addOnPreDrawListener(preDrawListener)
             scheduleLiveUpdate()
         }
     }
 
     override fun onDetachedFromWindow() {
         viewTreeObserver?.removeOnDrawListener(drawListener)
-        viewTreeObserver?.removeOnPreDrawListener(preDrawListener)
         removeCallbacks(liveUpdate)
         removeCallbacks(blurUpdate)
         liveUpdatePosted = false
@@ -529,6 +532,7 @@ class VariableBlurView @JvmOverloads constructor(
 
         blurController?.release()
         hasFirstFrame = false
+        hasRenderedToOutputSurface = false
         blurTextureView?.alpha = 0f
         frameLostListener?.invoke()
 
