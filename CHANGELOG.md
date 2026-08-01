@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-08-01
+
+- fix: expose backdrop readiness on every platform
+- fix(android): preserve capture sources for stacked overlay composition
+- fix(android): keep blur geometry stable while the radius animates
+
 ## [0.10.0] — 2026-07-30
 
 - Raise Android minSdk to 24 so every supported device has reliable
