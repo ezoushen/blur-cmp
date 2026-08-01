@@ -2,10 +2,13 @@ package io.github.ezoushen.blur.capture
 
 import android.graphics.SurfaceTexture
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.view.Surface
 import android.view.View
 import androidx.annotation.ChecksSdkIntAtLeast
 import androidx.annotation.RequiresApi
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Zero-copy capture using Surface.lockHardwareCanvas() + SurfaceTexture (API 26+).
@@ -26,9 +29,12 @@ class SurfaceTextureCapture {
 
     private var surfaceTexture: SurfaceTexture? = null
     private var surface: Surface? = null
+    private var textureId = 0
 
     private var lastWidth = 0
     private var lastHeight = 0
+    private val producerFrameAvailable = AtomicBoolean(false)
+    private val firstFramePending = AtomicBoolean(false)
 
     @Volatile
     private var isCapturing = false
@@ -53,15 +59,27 @@ class SurfaceTextureCapture {
      * @param height The capture height (downsampled)
      */
     fun init(glTextureId: Int, width: Int, height: Int) {
-        if (lastWidth == width && lastHeight == height && surfaceTexture != null) return
+        if (textureId == glTextureId && surfaceTexture != null) {
+            return
+        }
 
         release()
 
         val st = SurfaceTexture(glTextureId)
+        st.setOnFrameAvailableListener(
+            { available ->
+                if (surfaceTexture === available) {
+                    producerFrameAvailable.set(true)
+                    firstFramePending.set(false)
+                }
+            },
+            Handler(Looper.getMainLooper()),
+        )
         st.setDefaultBufferSize(width, height)
         surfaceTexture = st
         surface = Surface(st)
 
+        textureId = glTextureId
         lastWidth = width
         lastHeight = height
     }
@@ -79,17 +97,13 @@ class SurfaceTextureCapture {
      * @return true if capture succeeded
      */
     fun capture(blurView: View, sourceView: View, width: Int, height: Int): Boolean {
+        firstFramePending.set(false)
         val surf = surface ?: return false
 
         if (!surf.isValid) return false
         if (blurView.width == 0 || blurView.height == 0) return false
 
-        // Reinitialize if dimensions changed
-        if (width != lastWidth || height != lastHeight) {
-            surfaceTexture?.setDefaultBufferSize(width, height)
-            lastWidth = width
-            lastHeight = height
-        }
+        if (width <= 0 || height <= 0 || lastWidth <= 0 || lastHeight <= 0) return false
 
         val hiddenViews = mutableListOf<View>()
         val dimmedViews = mutableListOf<Pair<View, Float>>()
@@ -128,8 +142,11 @@ class SurfaceTextureCapture {
             try {
                 canvas.drawColor(0, android.graphics.PorterDuff.Mode.CLEAR)
 
-                val scaleX = width.toFloat() / blurView.width
-                val scaleY = height.toFloat() / blurView.height
+                // Keep the producer buffer stable while the blur radius changes the
+                // processing resolution. Resizing a SurfaceTexture with an older frame
+                // queued makes that frame sample with the next size's geometry.
+                val scaleX = lastWidth.toFloat() / blurView.width
+                val scaleY = lastHeight.toFloat() / blurView.height
                 canvas.scale(scaleX, scaleY)
                 canvas.translate(-offsetX.toFloat(), -offsetY.toFloat())
                 sourceView.draw(canvas)
@@ -139,6 +156,12 @@ class SurfaceTextureCapture {
 
             // Update the SurfaceTexture to make the content available as GL texture.
             // This must be called on the GL thread (which is the main thread in our pipeline).
+            if (!producerFrameAvailable.get()) {
+                firstFramePending.set(true)
+                blurView.postInvalidateOnAnimation()
+                return false
+            }
+
             surfaceTexture?.updateTexImage()
 
             return true
@@ -155,16 +178,23 @@ class SurfaceTextureCapture {
         }
     }
 
+    internal fun isFirstFramePending(): Boolean = firstFramePending.get()
+
     /**
      * Releases all resources.
      */
     fun release() {
         surface?.release()
         surface = null
-        surfaceTexture?.release()
+        val st = surfaceTexture
         surfaceTexture = null
+        st?.setOnFrameAvailableListener(null)
+        st?.release()
+        textureId = 0
         lastWidth = 0
         lastHeight = 0
+        producerFrameAvailable.set(false)
+        firstFramePending.set(false)
     }
 
     companion object {

@@ -145,6 +145,57 @@ class StackedBlurOverlayTest {
     }
 
     @Test
+    fun inlineStaticOverlayKeepsBackdropGeometryAcrossRadiusChanges() {
+        val state = AtomicReference<BlurOverlayState>()
+
+        launchEmptyActivity().use { scenario ->
+            scenario.onActivity { activity ->
+                activity.setContent {
+                    Box(Modifier.fillMaxSize().background(Color.Blue)) {
+                        EdgeMarker(
+                            Modifier
+                                .offset(x = 32.dp, y = 120.dp)
+                                .size(160.dp),
+                        )
+                        val overlayState = rememberBlurOverlayState(
+                            BlurOverlayConfig(radius = 4f, isLive = false),
+                        )
+                        SideEffect { state.set(overlayState) }
+                        BlurOverlay(
+                            state = overlayState,
+                            modifier = Modifier.fillMaxSize(),
+                        ) {}
+                    }
+                }
+            }
+
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                state.get()?.isReady == true
+            }
+            val initial = takeScreenshot()
+            assertSoftenedEdge(
+                initial,
+                yDp = 200,
+                context = "Inline static overlay first frame",
+            )
+            val initialCenter = edgeCenterDp(initial, yDp = 200)
+            val initialContrast = centerEdgeContrast(initial, yDp = 200)
+
+            scenario.onActivity { state.get().setRadius(20f) }
+            val changed = awaitScreenshot {
+                centerEdgeContrast(it, yDp = 200) < initialContrast * 0.75f
+            }
+            assertSoftenedEdge(changed, yDp = 200, context = "Changed-radius frame")
+            val changedCenter = edgeCenterDp(changed, yDp = 200)
+            assertTrue(
+                kotlin.math.abs(changedCenter - initialCenter) <= 2f,
+                "Radius change must not move the captured backdrop edge; " +
+                    "was ${initialCenter}dp, now ${changedCenter}dp",
+            )
+        }
+    }
+
+    @Test
     fun siblingOverlaysShareOneBackdropStack() {
         launchEmptyActivity().use { scenario ->
             scenario.onActivity { activity ->
@@ -2109,29 +2160,42 @@ class StackedBlurOverlayTest {
         val left = sample(bitmap, xDp = 108, yDp = yDp)
         val right = sample(bitmap, xDp = 116, yDp = yDp)
         val farRight = sample(bitmap, xDp = 136, yDp = yDp)
-        val contrast = maxOf(
-            kotlin.math.abs(
-                android.graphics.Color.red(left) - android.graphics.Color.red(right),
-            ),
-            kotlin.math.abs(
-                android.graphics.Color.green(left) - android.graphics.Color.green(right),
-            ),
-            kotlin.math.abs(
-                android.graphics.Color.blue(left) - android.graphics.Color.blue(right),
-            ),
-        )
-        val markerContrast = maxOf(
-            kotlin.math.abs(
-                android.graphics.Color.red(farLeft) - android.graphics.Color.red(farRight),
-            ),
-            kotlin.math.abs(
-                android.graphics.Color.green(farLeft) - android.graphics.Color.green(farRight),
-            ),
-            kotlin.math.abs(
-                android.graphics.Color.blue(farLeft) - android.graphics.Color.blue(farRight),
-            ),
-        )
+        val contrast = colorContrast(left, right)
+        val markerContrast = colorContrast(farLeft, farRight)
         return markerContrast > 40 && contrast < markerContrast
+    }
+
+    private fun centerEdgeContrast(bitmap: Bitmap, yDp: Int): Int =
+        colorContrast(
+            sample(bitmap, xDp = 108, yDp = yDp),
+            sample(bitmap, xDp = 116, yDp = yDp),
+        )
+
+    private fun colorContrast(left: Int, right: Int): Int = maxOf(
+        kotlin.math.abs(AndroidColor.red(left) - AndroidColor.red(right)),
+        kotlin.math.abs(AndroidColor.green(left) - AndroidColor.green(right)),
+        kotlin.math.abs(AndroidColor.blue(left) - AndroidColor.blue(right)),
+    )
+
+    private fun edgeCenterDp(bitmap: Bitmap, yDp: Int): Float {
+        val density = InstrumentationRegistry
+            .getInstrumentation()
+            .targetContext
+            .resources
+            .displayMetrics
+            .density
+        val y = (yDp * density).toInt().coerceIn(0, bitmap.height - 1)
+        val start = (88 * density).toInt().coerceIn(0, bitmap.width - 2)
+        val end = (136 * density).toInt().coerceIn(start + 1, bitmap.width - 1)
+        var weightSum = 0f
+        var weightedX = 0f
+        for (x in start until end) {
+            val weight = colorContrast(bitmap.getPixel(x, y), bitmap.getPixel(x + 1, y)).toFloat()
+            weightSum += weight
+            weightedX += (x + 0.5f) * weight
+        }
+        assertTrue(weightSum > 40f, "Captured backdrop edge must remain measurable")
+        return weightedX / weightSum / density
     }
 
     private fun assertRed(pixel: Int, context: String) {

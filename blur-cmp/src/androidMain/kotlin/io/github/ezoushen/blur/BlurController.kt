@@ -262,7 +262,14 @@ class BlurController(
 
         // Check if dimensions changed — always requires full recapture
         val dimensionsChanged = view.width != lastWidth || view.height != lastHeight
-        if (dimensionsChanged) contentDirty = true
+        if (dimensionsChanged) {
+            contentDirty = true
+            if (lastWidth != 0 && lastHeight != 0) {
+                surfaceTextureCapture?.release()
+                lastWidth = view.width
+                lastHeight = view.height
+            }
+        }
 
         if (!configDirty && !contentDirty) {
             return false
@@ -427,6 +434,7 @@ class BlurController(
         // Note: excluded views are managed separately per capture instance
 
         if (!stCapture.capture(view, source, scaledWidth, scaledHeight)) {
+            if (stCapture.isFirstFramePending()) return false
             return updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
         }
 
