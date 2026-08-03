@@ -1034,6 +1034,8 @@ class StackedBlurOverlayTest {
 
     @Test
     fun thirdOverlayCapturesBothLowerOverlays() {
+        val states = AtomicReference<List<BlurOverlayState>>()
+
         launchEmptyActivity().use { scenario ->
             scenario.onActivity { activity ->
                 activity.setContent {
@@ -1050,6 +1052,7 @@ class StackedBlurOverlayTest {
                     val overlayC = rememberBlurOverlayState(
                         BlurOverlayConfig(radius = 12f, isLive = false),
                     )
+                    SideEffect { states.set(listOf(overlayA, overlayB, overlayC)) }
 
                     BlurOverlay(
                         state = overlayA,
@@ -1087,6 +1090,10 @@ class StackedBlurOverlayTest {
                 }
             }
 
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                states.get()?.all { it.isReady } == true
+            }
+            composeRule.waitForIdle()
             val screenshot = awaitScreenshot {
                 val pixel = sample(it, xFraction = 0.8f, yFraction = 0.85f)
                 AndroidColor.red(pixel) > 20 &&
@@ -2118,7 +2125,11 @@ class StackedBlurOverlayTest {
             }
 
             composeRule.waitUntil(timeoutMillis = 10_000) { textureReady.get() }
-            val visibleOutsideClip = sample(takeScreenshot(), xDp = 152, yDp = 136)
+            var visibleOutsideClip = 0
+            awaitScreenshot {
+                visibleOutsideClip = sample(it, xDp = 152, yDp = 136)
+                AndroidColor.blue(visibleOutsideClip) > AndroidColor.green(visibleOutsideClip)
+            }.recycle()
             assertTrue(
                 AndroidColor.blue(visibleOutsideClip) > AndroidColor.green(visibleOutsideClip),
                 "TextureView test precondition requires the live view to be clipped; " +
@@ -2304,16 +2315,17 @@ class StackedBlurOverlayTest {
             }
 
             composeRule.waitUntil(timeoutMillis = 10_000) { surfaceReady.get() }
+            val capturedOverlap = awaitScreenshot {
+                val pixel = sample(it, xDp = 80, yDp = 176)
+                isSoftenedEdge(it, yDp = 136) &&
+                    AndroidColor.red(pixel) > 200 &&
+                    AndroidColor.green(pixel) > 200
+            }
             assertSoftenedEdge(
-                awaitScreenshot { isSoftenedEdge(it, yDp = 136) },
+                capturedOverlap,
                 yDp = 136,
                 context = "Upper overlay on-top SurfaceView edge",
             )
-            val capturedOverlap = awaitScreenshot {
-                val pixel = sample(it, xDp = 80, yDp = 176)
-                AndroidColor.red(pixel) > 200 &&
-                    AndroidColor.green(pixel) > 200
-            }
             val overlapPixel = sample(capturedOverlap, xDp = 80, yDp = 176)
             assertTrue(
                 AndroidColor.red(overlapPixel) > 200 &&
@@ -3281,12 +3293,11 @@ class StackedBlurOverlayTest {
     ): Int {
         var pixel = 0
         try {
-            composeRule.waitUntil(timeoutMillis = 10_000) {
-                val screenshot = takeScreenshot()
-                pixel = sample(screenshot, xFraction, yFraction)
-                screenshot.recycle()
+            val screenshot = awaitScreenshot { candidate ->
+                pixel = sample(candidate, xFraction, yFraction)
                 predicate(pixel)
             }
+            screenshot.recycle()
         } catch (error: ComposeTimeoutException) {
             throw AssertionError(
                 "Pixel condition timed out; sampled #${pixel.toUInt().toString(16)}",
@@ -3305,6 +3316,7 @@ class StackedBlurOverlayTest {
                 true
             } else {
                 candidate.recycle()
+                Thread.sleep(200)
                 false
             }
         }
