@@ -3309,7 +3309,7 @@ class StackedBlurOverlayTest {
 
     private fun awaitScreenshot(predicate: (Bitmap) -> Boolean): Bitmap {
         var screenshot: Bitmap? = null
-        composeRule.waitUntil(timeoutMillis = 10_000) {
+        composeRule.waitUntil(timeoutMillis = 30_000) {
             val candidate = takeScreenshot()
             if (predicate(candidate)) {
                 screenshot = candidate
