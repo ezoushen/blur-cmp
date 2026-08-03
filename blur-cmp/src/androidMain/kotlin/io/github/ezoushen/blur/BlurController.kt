@@ -391,7 +391,7 @@ class BlurController(
         lastWidth = view.width
         lastHeight = view.height
         configDirty = false
-        contentDirty = false
+        contentDirty = capture.takeDeliveryNeedsRefresh()
 
         return true
     }
@@ -426,8 +426,25 @@ class BlurController(
         if (!captured) {
             return false
         }
-        val nextDirectFrame = if (useDirectFrame) capture.takeDirectWindowFrame() else null
-        val blurInput = nextDirectFrame?.bitmap ?: captureOutput ?: return false
+        var nextDirectFrame = if (useDirectFrame) capture.takeDirectWindowFrame() else null
+        var blurInput = nextDirectFrame?.bitmap ?: captureOutput ?: return false
+        if (blurInput.width != scaledWidth || blurInput.height != scaledHeight) {
+            val output = obtainCaptureBitmap(scaledWidth, scaledHeight)
+            if (output == null) {
+                nextDirectFrame?.close()
+                return false
+            }
+            output.eraseColor(android.graphics.Color.TRANSPARENT)
+            Canvas(output).drawBitmap(
+                blurInput,
+                null,
+                Rect(0, 0, scaledWidth, scaledHeight),
+                paint,
+            )
+            nextDirectFrame?.close()
+            nextDirectFrame = null
+            blurInput = output
+        }
 
         if (config.tintOrder == TintOrder.PRE_BLUR) {
             applyTint(blurInput)

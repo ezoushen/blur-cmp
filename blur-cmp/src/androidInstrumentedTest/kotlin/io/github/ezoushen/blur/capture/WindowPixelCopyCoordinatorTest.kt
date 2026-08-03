@@ -717,28 +717,75 @@ class WindowPixelCopyCoordinatorTest {
     }
 
     @Test
-    fun staleFrontBitmapWithDifferentOutputSizeIsNotDelivered() {
+    fun contentFreshFrontBitmapWithDifferentOutputSizeIsScaled() {
         val window = createWindows(1).single()
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val capture = DecorViewCapture()
         val blurView = View(context).apply { layout(0, 0, 40, 40) }
         val output = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
-        val staleFront = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888)
+        val capturedFront = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888).apply {
+            eraseColor(Color.CYAN)
+        }
+        var releaseCount = 0
 
         onMain {
             capture.setSourceWindow(window)
-            capture.setPrivateField("windowFront", staleFront)
+            capture.setPrivateField(
+                "windowFrontLease",
+                WindowPixelCopyLease(capturedFront) { releaseCount++ },
+            )
             capture.setPrivateField("windowSourceRects", listOf(Rect(0, 0, 40, 40)))
             capture.setPrivateField("windowDeliveryPending", true)
             capture.setPrivateField("windowDeliveryRequestVersion", 0L)
             capture.setPrivateField("windowPending", true)
 
-            assertEquals(
-                false,
-                capture.capture(blurView, blurView, output, 1f),
-                "A front bitmap from a different output size must not be delivered",
-            )
+            assertTrue(capture.capture(blurView, blurView, output, 1f))
+            assertEquals(Color.CYAN, output.getPixel(0, 0))
+            assertTrue(capture.takeDeliveryNeedsRefresh())
+            assertEquals(1, releaseCount)
             capture.release()
+            assertEquals(1, releaseCount)
+            capturedFront.recycle()
+            output.recycle()
+        }
+    }
+
+    @Test
+    fun contentFreshPreparedPrefixWithDifferentOutputSizeIsScaledAndReleased() {
+        val window = createWindows(1).single()
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val capture = DecorViewCapture()
+        val blurView = View(context).apply { layout(0, 0, 40, 40) }
+        val output = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        val captured = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888).apply {
+            eraseColor(Color.CYAN)
+        }
+        val prefix = BackdropCapturePrefix(
+            parent = null,
+            source = BackdropCaptureSource(blurView, window),
+        )
+        var releaseCount = 0
+
+        onMain {
+            capture.setCapturePrefix(prefix)
+            capture.setPrivateField(
+                "windowFrontPrefixFrame",
+                WindowPrefixFrame(WindowPixelCopyLease(captured) { releaseCount++ }),
+            )
+            capture.setPrivateField("windowCapturePrefix", prefix)
+            capture.setPrivateField("windowPrefixRect", Rect(0, 0, 40, 40))
+            capture.setPrivateField("windowPrefixOutputWidth", 8)
+            capture.setPrivateField("windowPrefixOutputHeight", 8)
+            capture.setPrivateField("windowDeliveryPending", true)
+            capture.setPrivateField("windowDeliveryRequestVersion", 0L)
+
+            assertTrue(capture.capture(blurView, blurView, output, 1f))
+            assertEquals(Color.CYAN, output.getPixel(0, 0))
+            assertTrue(capture.takeDeliveryNeedsRefresh())
+            assertEquals(1, releaseCount)
+            capture.release()
+            assertEquals(1, releaseCount)
+            captured.recycle()
             output.recycle()
         }
     }
@@ -768,6 +815,7 @@ class WindowPixelCopyCoordinatorTest {
             assertTrue(capture.captureForBlur(blurView, blurView, output, 1f))
             val frame = requireNotNull(capture.takeDirectWindowFrame())
             assertTrue(frame.bitmap === captured)
+            assertFalse(capture.takeDeliveryNeedsRefresh())
             assertEquals(Color.MAGENTA, output.getPixel(0, 0))
             assertEquals(0, releaseCount)
 
@@ -814,6 +862,7 @@ class WindowPixelCopyCoordinatorTest {
             )
             val frame = requireNotNull(capture.takeDirectWindowFrame())
             assertTrue(frame.bitmap === captured)
+            assertFalse(capture.takeDeliveryNeedsRefresh())
             assertEquals(0, releaseCount)
 
             frame.close()

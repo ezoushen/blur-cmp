@@ -64,6 +64,7 @@ class DecorViewCapture : ContentCapture {
     private var windowFrontPrefixFrame: WindowPrefixFrame? = null
     private var directWindowFrame: WindowCapturedBitmap? = null
     private var directCoordinatorDelivery = false
+    private var deliveryNeedsRefresh = false
     private var windowBack: Bitmap? = null
     private var windowPlaneBack: Bitmap? = null
     private var windowPending = false
@@ -183,6 +184,9 @@ class DecorViewCapture : ContentCapture {
     internal fun takeDirectWindowFrame(): WindowCapturedBitmap? =
         directWindowFrame.also { directWindowFrame = null }
 
+    internal fun takeDeliveryNeedsRefresh(): Boolean =
+        deliveryNeedsRefresh.also { deliveryNeedsRefresh = false }
+
     override fun capture(
         blurView: View,
         sourceView: View,
@@ -222,12 +226,15 @@ class DecorViewCapture : ContentCapture {
             val frontLease = windowFrontLease
             val front = frontLease?.bitmap ?: windowFront
             if (windowDeliveryPending && front != null &&
-                front.width == output.width && front.height == output.height &&
                 windowSourceRects == sourceRects &&
                 windowDeliveryRequestVersion == requestVersion
             ) {
                 windowDeliveryPending = false
-                if (directCoordinatorDelivery && frontLease != null) {
+                deliveryNeedsRefresh =
+                    front.width != output.width || front.height != output.height
+                if (directCoordinatorDelivery && frontLease != null &&
+                    front.width == output.width && front.height == output.height
+                ) {
                     windowFrontLease = null
                     directWindowFrame = frontLease
                 } else {
@@ -438,12 +445,12 @@ class DecorViewCapture : ContentCapture {
         if (windowDeliveryPending && front != null &&
             windowCapturePrefix === prefix &&
             windowPrefixRect == screenRect &&
-            windowPrefixOutputWidth == outputWidth &&
-            windowPrefixOutputHeight == outputHeight &&
             windowDeliveryRequestVersion == requestVersion
         ) {
             windowDeliveryPending = false
             windowFrontPrefixFrame = null
+            deliveryNeedsRefresh =
+                front.bitmap.width != outputWidth || front.bitmap.height != outputHeight
             if (directCoordinatorDelivery) {
                 directWindowFrame = front
             } else {
@@ -916,6 +923,7 @@ class DecorViewCapture : ContentCapture {
         windowPending = false
         windowDeliveryPending = false
         windowDeliveryRequestVersion = Long.MIN_VALUE
+        deliveryNeedsRefresh = false
         cancelWindowRetry()
         windowFrontLease?.close()
         windowFrontLease = null
