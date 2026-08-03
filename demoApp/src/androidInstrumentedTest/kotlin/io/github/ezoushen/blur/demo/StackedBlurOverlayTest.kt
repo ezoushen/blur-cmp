@@ -21,10 +21,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.junit4.v2.createEmptyComposeRule
 import androidx.compose.ui.unit.dp
@@ -33,13 +35,24 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import io.github.ezoushen.blur.BlurConfig
+import io.github.ezoushen.blur.BlurController
+import io.github.ezoushen.blur.BlurGradient
+import io.github.ezoushen.blur.BlurPipelineStrategy
+import io.github.ezoushen.blur.VariableBlurController
+import io.github.ezoushen.blur.algorithm.OpenGLBlur
+import io.github.ezoushen.blur.algorithm.VariableOpenGLBlur
 import io.github.ezoushen.blur.capture.DecorViewCapture
 import io.github.ezoushen.blur.capture.SurfaceCapture
 import io.github.ezoushen.blur.cmp.BackdropBlurDialog
+import io.github.ezoushen.blur.cmp.AndroidBlurOverlayCaptureSource
 import io.github.ezoushen.blur.cmp.BlurOverlay
 import io.github.ezoushen.blur.cmp.BlurOverlayConfig
+import io.github.ezoushen.blur.cmp.BlurOverlayHost
+import io.github.ezoushen.blur.cmp.BlurOverlayPlatformContext
 import io.github.ezoushen.blur.cmp.BlurOverlayState
 import io.github.ezoushen.blur.cmp.BlurGradientType
+import io.github.ezoushen.blur.cmp.LocalBlurOverlayPlatformContext
 import io.github.ezoushen.blur.cmp.rememberBlurOverlayState
 import io.github.ezoushen.blur.cmp.withTint
 import io.github.ezoushen.blur.view.BlurView
@@ -78,12 +91,13 @@ class StackedBlurOverlayTest {
         val compositionOrder = DecorViewCapture::class.java.getDeclaredMethod(
             "compositionOrder",
             SurfaceView::class.java,
+            Boolean::class.javaPrimitiveType,
         ).apply {
             isAccessible = true
         }
 
-        val regularOrder = compositionOrder.invoke(capture, regular) as Int
-        val overlayOrder = compositionOrder.invoke(capture, overlay) as Int
+        val regularOrder = compositionOrder.invoke(capture, regular, false) as Int
+        val overlayOrder = compositionOrder.invoke(capture, overlay, false) as Int
         capture.release()
 
         assertTrue(
@@ -108,11 +122,12 @@ class StackedBlurOverlayTest {
         val compositionOrder = DecorViewCapture::class.java.getDeclaredMethod(
             "compositionOrder",
             SurfaceView::class.java,
+            Boolean::class.javaPrimitiveType,
         ).apply {
             isAccessible = true
         }
 
-        val actualOrder = compositionOrder.invoke(capture, surface) as Int
+        val actualOrder = compositionOrder.invoke(capture, surface, false) as Int
         capture.release()
 
         assertTrue(
@@ -142,6 +157,644 @@ class StackedBlurOverlayTest {
             hasFirstFrame = view::hasFirstFrame,
             setOnFrameLostListener = view::setOnFrameLostListener,
         )
+    }
+
+    @Test
+    fun blurViewHidesPreviousFrameWhenCaptureSourceChanges() {
+        val view = BlurView.kawase(ApplicationProvider.getApplicationContext())
+        assertCaptureSourceChangeResetsTextureGate(
+            owner = view,
+            textureView = view.getChildAt(0) as TextureView,
+            hasFirstFrame = view::hasFirstFrame,
+            setOnFrameLostListener = view::setOnFrameLostListener,
+        )
+    }
+
+    @Test
+    fun variableBlurViewHidesPreviousFrameWhenCaptureSourceChanges() {
+        val view = VariableBlurView(ApplicationProvider.getApplicationContext())
+        assertCaptureSourceChangeResetsTextureGate(
+            owner = view,
+            textureView = view.getChildAt(0) as TextureView,
+            hasFirstFrame = view::hasFirstFrame,
+            setOnFrameLostListener = view::setOnFrameLostListener,
+        )
+    }
+
+    @Test
+    fun stackedBlurViewsRetainDirectSurfaceOutput() {
+        for (gradient in listOf<BlurGradientType?>(null, BlurGradientType.Linear())) {
+            val lowerRoot = AtomicReference<View>()
+            val upperRoot = AtomicReference<View>()
+
+            launchEmptyActivity().use { scenario ->
+                scenario.onActivity { activity ->
+                    activity.setContent {
+                        BlurOverlay(
+                            state = rememberBlurOverlayState(
+                                BlurOverlayConfig(
+                                    radius = 12f,
+                                    gradient = gradient,
+                                    isLive = false,
+                                ),
+                            ),
+                            modifier = Modifier.fillMaxSize(),
+                            onDismissRequest = {},
+                        ) {
+                            val currentLowerRoot = LocalView.current.rootView
+                            SideEffect { lowerRoot.set(currentLowerRoot) }
+                            BlurOverlay(
+                                state = rememberBlurOverlayState(
+                                    BlurOverlayConfig(
+                                        radius = 12f,
+                                        gradient = gradient,
+                                        isLive = false,
+                                    ),
+                                ),
+                                modifier = Modifier.fillMaxSize(),
+                                onDismissRequest = {},
+                            ) {
+                                val currentUpperRoot = LocalView.current.rootView
+                                SideEffect { upperRoot.set(currentUpperRoot) }
+                            }
+                        }
+                    }
+                }
+
+                val blurViewsReady = AtomicBoolean()
+                composeRule.waitUntil(timeoutMillis = 10_000) {
+                    scenario.onActivity {
+                        val blurViews = listOf(lowerRoot.get(), upperRoot.get())
+                            .mapNotNull { root -> root?.let(::findBlurCaptureView) }
+                        blurViewsReady.set(
+                            blurViews.size == 2 && blurViews.all { blurView ->
+                                when (blurView) {
+                                    is BlurView -> blurView.hasFirstFrame()
+                                    is VariableBlurView -> blurView.hasFirstFrame()
+                                    else -> false
+                                }
+                            },
+                        )
+                    }
+                    blurViewsReady.get()
+                }
+
+                scenario.onActivity {
+                    listOf("lower" to lowerRoot.get(), "upper" to upperRoot.get())
+                        .forEach { (layer, root) ->
+                            val blurView = requireNotNull(root?.let(::findBlurCaptureView))
+                            val hasTextureOutput = (blurView as ViewGroup).let { parent ->
+                                (0 until parent.childCount).any { index ->
+                                    parent.getChildAt(index) is TextureView
+                                }
+                            }
+                            assertTrue(
+                                hasTextureOutput,
+                                "$layer stacked ${blurView.javaClass.simpleName} must retain " +
+                                    "direct TextureView output",
+                            )
+                            assertTrue(
+                                blurControllerHasOutputSurface(blurView),
+                                "$layer stacked ${blurView.javaClass.simpleName} must render " +
+                                    "through its direct Surface instead of glReadPixels",
+                            )
+                        }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun surfaceTextureProducerKeepsInitialGeometryAcrossRadiusChanges() {
+        assertSurfaceTextureProducerKeepsInitialGeometryAcrossRadiusChanges(
+            createView = { activity ->
+                BlurView.kawase(activity).apply {
+                    setIsLive(false)
+                    setBlurConfig(
+                        BlurConfig(
+                            radius = 20f,
+                            pipelineStrategy = BlurPipelineStrategy.SURFACE_TEXTURE,
+                        ),
+                    )
+                }
+            },
+            hasFirstFrame = BlurView::hasFirstFrame,
+            lowerRadius = { view ->
+                view.setBlurRadius(4f)
+                view.requestSingleUpdate()
+            },
+            restoreRadius = { view ->
+                view.setBlurRadius(20f)
+                view.requestSingleUpdate()
+            },
+        )
+    }
+
+    @Test
+    fun variableSurfaceTextureProducerKeepsInitialGeometryAcrossRadiusChanges() {
+        assertSurfaceTextureProducerKeepsInitialGeometryAcrossRadiusChanges(
+            createView = { activity ->
+                VariableBlurView(activity).apply {
+                    setIsLive(false)
+                    setBlurGradient(BlurGradient.verticalGradient(0f, 20f))
+                    setBlurConfig(
+                        BlurConfig(
+                            radius = 20f,
+                            pipelineStrategy = BlurPipelineStrategy.SURFACE_TEXTURE,
+                        ),
+                    )
+                }
+            },
+            hasFirstFrame = VariableBlurView::hasFirstFrame,
+            lowerRadius = { view ->
+                view.setBlurGradient(BlurGradient.verticalGradient(0f, 4f))
+                view.requestSingleUpdate()
+            },
+            restoreRadius = { view ->
+                view.setBlurGradient(BlurGradient.verticalGradient(0f, 20f))
+                view.requestSingleUpdate()
+            },
+        )
+    }
+
+    @Test
+    fun surfaceTextureCaptureKeepsBlurViewVisibilityStable() {
+        val visibilityChanged = AtomicBoolean()
+        val blurView = AtomicReference<BlurView>()
+
+        launchEmptyActivity().use { scenario ->
+            scenario.onActivity { activity ->
+                val view = BlurView.kawase(activity).apply {
+                    setIsLive(false)
+                    setBlurConfig(
+                        BlurConfig(
+                            radius = 20f,
+                            pipelineStrategy = BlurPipelineStrategy.SURFACE_TEXTURE,
+                        ),
+                    )
+                }
+                blurView.set(view)
+                val root = object : FrameLayout(activity) {
+                    override fun dispatchDraw(canvas: android.graphics.Canvas) {
+                        if (view.visibility != View.VISIBLE) {
+                            visibilityChanged.set(true)
+                        }
+                        super.dispatchDraw(canvas)
+                    }
+                }.apply {
+                    setBackgroundColor(AndroidColor.BLUE)
+                    addView(
+                        view,
+                        FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                        ),
+                    )
+                }
+                activity.setContentView(root)
+            }
+
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                blurView.get()?.hasFirstFrame() == true
+            }
+            assertFalse(
+                visibilityChanged.get(),
+                "SurfaceTexture capture must rely on the draw recursion guard instead of " +
+                    "mutating blur-view visibility on every frame",
+            )
+        }
+    }
+
+    @Test
+    fun surfaceTextureCaptureDoesNotRecapturePreviousBlurFrame() {
+        val root = AtomicReference<FrameLayout>()
+        val blurView = AtomicReference<BlurView>()
+
+        launchEmptyActivity().use { scenario ->
+            scenario.onActivity { activity ->
+                val view = BlurView.kawase(activity).apply {
+                    setIsLive(false)
+                    setBlurConfig(
+                        BlurConfig(
+                            radius = 20f,
+                            pipelineStrategy = BlurPipelineStrategy.SURFACE_TEXTURE,
+                        ),
+                    )
+                }
+                blurView.set(view)
+                root.set(
+                    FrameLayout(activity).apply {
+                        setBackgroundColor(AndroidColor.RED)
+                        addView(
+                            view,
+                            FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                            ),
+                        )
+                        activity.setContentView(this)
+                    },
+                )
+            }
+
+            awaitPixel(xFraction = 0.5f, yFraction = 0.5f) {
+                AndroidColor.red(it) > AndroidColor.blue(it)
+            }
+            scenario.onActivity {
+                root.get().setBackgroundColor(AndroidColor.BLUE)
+                blurView.get().requestSingleUpdate()
+            }
+            val pixel = awaitPixel(xFraction = 0.5f, yFraction = 0.5f) {
+                AndroidColor.blue(it) > AndroidColor.red(it)
+            }
+            assertTrue(
+                AndroidColor.blue(pixel) > AndroidColor.red(pixel),
+                "SurfaceTexture capture must exclude its previous blur frame; " +
+                    "sampled #${pixel.toUInt().toString(16)}",
+            )
+        }
+    }
+
+    @Test
+    fun surfaceTextureCaptureDoesNotLoseNewerSingleUpdateWhileFrameIsPending() {
+        val root = AtomicReference<FrameLayout>()
+        val blurView = AtomicReference<BlurView>()
+
+        launchEmptyActivity().use { scenario ->
+            scenario.onActivity { activity ->
+                val view = BlurView.kawase(activity).apply {
+                    setIsLive(false)
+                    setBlurConfig(
+                        BlurConfig(
+                            radius = 20f,
+                            pipelineStrategy = BlurPipelineStrategy.SURFACE_TEXTURE,
+                        ),
+                    )
+                }
+                blurView.set(view)
+                root.set(
+                    FrameLayout(activity).apply {
+                        setBackgroundColor(AndroidColor.RED)
+                        addView(
+                            view,
+                            FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                            ),
+                        )
+                        activity.setContentView(this)
+                    },
+                )
+            }
+
+            awaitPixel(xFraction = 0.5f, yFraction = 0.5f) {
+                AndroidColor.red(it) > AndroidColor.blue(it)
+            }
+            scenario.onActivity {
+                root.get().setBackgroundColor(AndroidColor.GREEN)
+                blurView.get().requestSingleUpdate()
+                val update = blurController(blurView.get()).javaClass.getMethod("update")
+                assertFalse(
+                    update.invoke(blurController(blurView.get())) as Boolean,
+                    "The first one-shot update must wait for its producer frame",
+                )
+
+                root.get().setBackgroundColor(AndroidColor.BLUE)
+                blurView.get().requestSingleUpdate()
+            }
+
+            val pixel = awaitPixel(xFraction = 0.5f, yFraction = 0.5f) {
+                AndroidColor.blue(it) > AndroidColor.green(it)
+            }
+            assertTrue(
+                AndroidColor.blue(pixel) > AndroidColor.green(pixel),
+                "A newer one-shot update must supersede the pending producer frame; " +
+                    "sampled #${pixel.toUInt().toString(16)}",
+            )
+        }
+    }
+
+    @Test
+    fun autoStrategyDoesNotRescanStableHierarchy() {
+        launchEmptyActivity().use { scenario ->
+            scenario.onActivity { activity ->
+                val source = object : FrameLayout(activity) {
+                    var childReads = 0
+
+                    override fun getChildAt(index: Int): View {
+                        childReads++
+                        return super.getChildAt(index)
+                    }
+                }.apply {
+                    addView(View(activity))
+                }
+                activity.setContentView(source)
+
+                for (controller in listOf(
+                    BlurController(activity),
+                    VariableBlurController(activity),
+                )) {
+                    controller.javaClass
+                        .getMethod("init", View::class.java, View::class.java)
+                        .invoke(controller, View(activity), source)
+                    val resolveStrategy = controller.javaClass
+                        .getDeclaredMethod("resolveStrategy")
+                        .apply { isAccessible = true }
+
+                    resolveStrategy.invoke(controller)
+                    val readsAfterFirstResolution = source.childReads
+                    repeat(3) { resolveStrategy.invoke(controller) }
+
+                    assertTrue(
+                        source.childReads == readsAfterFirstResolution,
+                        "AUTO strategy must cache SurfaceView presence until the hierarchy changes; " +
+                            "reads grew from $readsAfterFirstResolution to ${source.childReads}",
+                    )
+
+                    val surfaceView = SurfaceView(activity)
+                    source.addView(surfaceView)
+                    source.viewTreeObserver.dispatchOnGlobalLayout()
+                    val readsBeforeInsertionScan = source.childReads
+                    assertTrue(resolveStrategy.invoke(controller) == BlurPipelineStrategy.LEGACY)
+                    assertTrue(
+                        source.childReads > readsBeforeInsertionScan,
+                        "AUTO strategy must rescan after a hierarchy change",
+                    )
+
+                    source.removeView(surfaceView)
+                    source.viewTreeObserver.dispatchOnGlobalLayout()
+                    val readsBeforeRemovalScan = source.childReads
+                    resolveStrategy.invoke(controller)
+                    assertTrue(
+                        source.childReads > readsBeforeRemovalScan,
+                        "AUTO strategy must rescan after SurfaceView removal",
+                    )
+                    controller.javaClass.getMethod("release").invoke(controller)
+                    source.childReads = 0
+                }
+            }
+        }
+    }
+
+    private fun <T : View> assertSurfaceTextureProducerKeepsInitialGeometryAcrossRadiusChanges(
+        createView: (android.app.Activity) -> T,
+        hasFirstFrame: (T) -> Boolean,
+        lowerRadius: (T) -> Unit,
+        restoreRadius: (T) -> Unit,
+    ) {
+        val blurView = AtomicReference<T>()
+        launchEmptyActivity().use { scenario ->
+            scenario.onActivity { activity ->
+                val root = FrameLayout(activity).apply {
+                    setBackgroundColor(AndroidColor.BLUE)
+                }
+                val view = createView(activity)
+                blurView.set(view)
+                root.addView(
+                    view,
+                    FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                    ),
+                )
+                activity.setContentView(root)
+            }
+
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                blurView.get()?.let(hasFirstFrame) == true
+            }
+            val view = requireNotNull(blurView.get())
+            val producer = surfaceTexture(view)
+            assertTrue(
+                surfaceTextureCaptureWidth(view) == view.width / 4,
+                "A stable high-radius blur must retain the configured 4x downsample",
+            )
+
+            scenario.onActivity {
+                lowerRadius(view)
+            }
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                !blurControllerHasPendingDirty(view)
+            }
+            assertTrue(
+                surfaceTextureCaptureWidth(view) == view.width / 4,
+                "Radius changes must preserve the producer's initial geometry",
+            )
+            assertTrue(
+                surfaceTexture(view) === producer,
+                "Producer growth must not recreate the SurfaceTexture",
+            )
+
+            scenario.onActivity {
+                restoreRadius(view)
+            }
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                !blurControllerHasPendingDirty(view)
+            }
+            assertTrue(
+                surfaceTextureCaptureWidth(view) == view.width / 4,
+                "Restoring the radius must preserve the producer's initial geometry",
+            )
+            assertTrue(
+                surfaceTexture(view) === producer,
+                "Producer shrink must not recreate the SurfaceTexture",
+            )
+        }
+    }
+
+    @Test
+    fun readinessFollowsCurrentStateForEveryAndroidRenderer() {
+        for (mode in AndroidReadinessMode.entries) {
+            if (mode == AndroidReadinessMode.RENDER_EFFECT && android.os.Build.VERSION.SDK_INT < 31) {
+                continue
+            }
+            val useReplacement = mutableStateOf(false)
+            val mounted = mutableStateOf(true)
+            val firstState = AtomicReference<BlurOverlayState>()
+            val replacementState = AtomicReference<BlurOverlayState>()
+
+            launchEmptyActivity().use { scenario ->
+                scenario.onActivity { activity ->
+                    activity.setContent {
+                        val config = BlurOverlayConfig(
+                            radius = 12f,
+                            gradient = if (mode == AndroidReadinessMode.GRADIENT_BACKDROP) {
+                                BlurGradientType.Linear()
+                            } else {
+                                null
+                            },
+                            isLive = false,
+                        )
+                        val first = rememberBlurOverlayState(config).apply {
+                            isEnabled = mode != AndroidReadinessMode.DISABLED
+                        }
+                        val replacement = rememberBlurOverlayState(config).apply {
+                            isEnabled = mode != AndroidReadinessMode.DISABLED
+                        }
+                        SideEffect {
+                            firstState.set(first)
+                            replacementState.set(replacement)
+                        }
+
+                        if (mounted.value) {
+                            val active = if (useReplacement.value) replacement else first
+                            if (mode == AndroidReadinessMode.RENDER_EFFECT) {
+                                BlurOverlayHost(
+                                    state = active,
+                                    modifier = Modifier.fillMaxSize(),
+                                    background = {
+                                        Box(Modifier.fillMaxSize().background(Color.Blue))
+                                    },
+                                ) {}
+                            } else {
+                                Box(Modifier.fillMaxSize().background(Color.Blue))
+                                BlurOverlay(
+                                    state = active,
+                                    modifier = Modifier.fillMaxSize(),
+                                ) {}
+                            }
+                        }
+                    }
+                }
+
+                composeRule.waitUntil(timeoutMillis = 10_000) {
+                    firstState.get()?.isReady == true
+                }
+                scenario.onActivity { useReplacement.value = true }
+                composeRule.waitUntil(timeoutMillis = 10_000) {
+                    replacementState.get()?.isReady == true
+                }
+                assertFalse(
+                    requireNotNull(firstState.get()).isReady,
+                    "$mode must release readiness when its state is replaced",
+                )
+
+                scenario.onActivity { mounted.value = false }
+                composeRule.waitForIdle()
+                assertFalse(
+                    requireNotNull(replacementState.get()).isReady,
+                    "$mode must release readiness when its host unmounts",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun replacingLiveBackdropStateKeepsEveryAndroidCaptureRendererLive() {
+        for (gradient in listOf<BlurGradientType?>(null, BlurGradientType.Linear())) {
+            val useReplacement = mutableStateOf(false)
+            val firstState = AtomicReference<BlurOverlayState>()
+            val replacementState = AtomicReference<BlurOverlayState>()
+            val initialBlurView = AtomicReference<View>()
+
+            launchEmptyActivity().use { scenario ->
+                scenario.onActivity { activity ->
+                    activity.setContent {
+                        val config = BlurOverlayConfig(
+                            radius = 12f,
+                            gradient = gradient,
+                            isLive = true,
+                        )
+                        val first = rememberBlurOverlayState(config)
+                        val replacement = rememberBlurOverlayState(config)
+                        SideEffect {
+                            firstState.set(first)
+                            replacementState.set(replacement)
+                        }
+
+                        Box(Modifier.fillMaxSize().background(Color.Blue))
+                        BlurOverlay(
+                            state = if (useReplacement.value) replacement else first,
+                            modifier = Modifier.fillMaxSize(),
+                        ) {}
+                    }
+                }
+
+                composeRule.waitUntil(timeoutMillis = 10_000) {
+                    firstState.get()?.isReady == true
+                }
+                scenario.onActivity { activity ->
+                    initialBlurView.set(
+                        requireNotNull(findBlurCaptureView(activity.window.decorView)),
+                    )
+                    assertTrue(
+                        initialBlurView.get().isLiveBlurView(),
+                        "Initial ${initialBlurView.get().javaClass.simpleName} must be live",
+                    )
+                    useReplacement.value = true
+                }
+                composeRule.waitUntil(timeoutMillis = 10_000) {
+                    replacementState.get()?.isReady == true
+                }
+
+                scenario.onActivity { activity ->
+                    val blurView = requireNotNull(findBlurCaptureView(activity.window.decorView))
+                    assertTrue(
+                        blurView === initialBlurView.get(),
+                        "State replacement must reuse the existing capture renderer",
+                    )
+                    assertTrue(
+                        blurView.isLiveBlurView(),
+                        "Replacement ${blurView.javaClass.simpleName} must remain live",
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun alphaTransitionsReuseRendererAndPreserveLiveDirection() {
+        for (gradient in listOf<BlurGradientType?>(null, BlurGradientType.Linear())) {
+            val state = AtomicReference<BlurOverlayState>()
+            val initialBlurView = AtomicReference<View>()
+
+            launchEmptyActivity().use { scenario ->
+                scenario.onActivity { activity ->
+                    activity.setContent {
+                        val overlayState = rememberBlurOverlayState(
+                            BlurOverlayConfig(
+                                radius = 12f,
+                                gradient = gradient,
+                                isLive = true,
+                            ),
+                        )
+                        SideEffect { state.set(overlayState) }
+
+                        Box(Modifier.fillMaxSize().background(Color.Blue))
+                        BlurOverlay(
+                            state = overlayState,
+                            modifier = Modifier.fillMaxSize(),
+                        ) {}
+                    }
+                }
+
+                composeRule.waitUntil(timeoutMillis = 10_000) {
+                    state.get()?.isReady == true
+                }
+                scenario.onActivity { activity ->
+                    initialBlurView.set(
+                        requireNotNull(findBlurCaptureView(activity.window.decorView)),
+                    )
+                    state.get().alpha = 0.5f
+                }
+                composeRule.waitUntil(timeoutMillis = 10_000) {
+                    initialBlurView.get()?.let { it.alpha == 0.5f && !it.isLiveBlurView() } == true
+                }
+
+                scenario.onActivity {
+                    state.get().alpha = 0.75f
+                }
+                composeRule.waitUntil(timeoutMillis = 10_000) {
+                    initialBlurView.get()?.let { it.alpha == 0.75f && it.isLiveBlurView() } == true
+                }
+                scenario.onActivity { activity ->
+                    assertTrue(
+                        findBlurCaptureView(activity.window.decorView) === initialBlurView.get(),
+                        "Alpha animation must reuse the ${initialBlurView.get().javaClass.simpleName}",
+                    )
+                }
+            }
+        }
     }
 
     @Test
@@ -929,7 +1582,7 @@ class StackedBlurOverlayTest {
             awaitPixel(xFraction = 0.25f, yFraction = 0.25f) {
                 AndroidColor.blue(it) > AndroidColor.red(it)
             }
-            scenario.onActivity {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync {
                 showSurface.value = true
             }
             composeRule.waitUntil(timeoutMillis = 10_000) {
@@ -942,6 +1595,18 @@ class StackedBlurOverlayTest {
                 AndroidColor.red(pixel) > AndroidColor.blue(pixel),
                 "AUTO blur must switch from external input to bitmap capture when a " +
                     "SurfaceView appears; sampled #${pixel.toUInt().toString(16)}",
+            )
+
+            InstrumentationRegistry.getInstrumentation().runOnMainSync {
+                showSurface.value = false
+            }
+            val restoredPixel = awaitPixel(xFraction = 0.25f, yFraction = 0.25f) {
+                AndroidColor.blue(it) > AndroidColor.red(it)
+            }
+            assertTrue(
+                AndroidColor.blue(restoredPixel) > AndroidColor.red(restoredPixel),
+                "AUTO blur must return to external input after SurfaceView removal; " +
+                    "sampled #${restoredPixel.toUInt().toString(16)}",
             )
         }
     }
@@ -974,6 +1639,327 @@ class StackedBlurOverlayTest {
             "A retired surface bitmap must recycle after the Window PixelCopy releases it",
         )
         capture.release()
+    }
+
+    @Test
+    fun windowPixelCopyDoesNotRedeliverStaleFrameWhilePending() {
+        val capture = DecorViewCapture()
+        val output = Bitmap.createBitmap(40, 40, Bitmap.Config.ARGB_8888)
+
+        launchEmptyActivity().use { scenario ->
+            scenario.onActivity { activity ->
+                capture.setSourceWindow(activity.window)
+                assertFalse(
+                    capture.capture(
+                        activity.window.decorView,
+                        activity.window.decorView,
+                        output,
+                        4f,
+                    ),
+                )
+            }
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                DecorViewCapture::class.java
+                    .getDeclaredField("windowDeliveryPending")
+                    .apply { isAccessible = true }
+                    .getBoolean(capture)
+            }
+
+            scenario.onActivity { activity ->
+                assertTrue(
+                    capture.capture(
+                        activity.window.decorView,
+                        activity.window.decorView,
+                        output,
+                        4f,
+                    ),
+                    "The completed PixelCopy frame must be delivered once",
+                )
+                assertFalse(
+                    capture.capture(
+                        activity.window.decorView,
+                        activity.window.decorView,
+                        output,
+                        4f,
+                    ),
+                    "A pending PixelCopy must not redeliver and re-blur the stale front frame",
+                )
+            }
+        }
+
+        capture.release()
+        output.recycle()
+    }
+
+    @Test
+    fun windowPixelCopyDoesNotDeliverOlderSingleUpdateRequest() {
+        val capture = DecorViewCapture()
+        val output = Bitmap.createBitmap(40, 40, Bitmap.Config.ARGB_8888)
+        val blurView = AtomicReference<BlurView>()
+
+        launchEmptyActivity().use { scenario ->
+            scenario.onActivity { activity ->
+                val view = BlurView.kawase(activity).apply {
+                    setIsLive(false)
+                }
+                blurView.set(view)
+                activity.setContentView(
+                    FrameLayout(activity).apply {
+                        addView(view, FrameLayout.LayoutParams(40, 40))
+                    },
+                )
+                capture.setSourceWindow(activity.window)
+            }
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                blurView.get().width == 40
+            }
+            scenario.onActivity { activity ->
+                assertFalse(
+                    capture.capture(
+                        blurView.get(),
+                        activity.window.decorView,
+                        output,
+                        1f,
+                    ),
+                )
+                blurView.get().requestSingleUpdate()
+            }
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                DecorViewCapture::class.java
+                    .getDeclaredField("windowDeliveryPending")
+                    .apply { isAccessible = true }
+                    .getBoolean(capture)
+            }
+
+            scenario.onActivity { activity ->
+                assertFalse(
+                    capture.capture(
+                        blurView.get(),
+                        activity.window.decorView,
+                        output,
+                        1f,
+                    ),
+                    "A completed PixelCopy for an older one-shot request must be skipped",
+                )
+            }
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                DecorViewCapture::class.java
+                    .getDeclaredField("windowDeliveryPending")
+                    .apply { isAccessible = true }
+                    .getBoolean(capture)
+            }
+            scenario.onActivity { activity ->
+                assertTrue(
+                    capture.capture(
+                        blurView.get(),
+                        activity.window.decorView,
+                        output,
+                        1f,
+                    ),
+                    "The PixelCopy matching the newest one-shot request must be delivered",
+                )
+            }
+        }
+
+        capture.release()
+        output.recycle()
+    }
+
+    @Test
+    fun pendingWindowPixelCopySkipsUnusedSurfaceScan() {
+        val capture = DecorViewCapture()
+        val output = Bitmap.createBitmap(40, 40, Bitmap.Config.ARGB_8888)
+        val root = AtomicReference<FrameLayout>()
+        val blurView = AtomicReference<View>()
+        val surfaceView = AtomicReference<SurfaceView>()
+
+        launchEmptyActivity().use { scenario ->
+            scenario.onActivity { activity ->
+                root.set(FrameLayout(activity))
+                blurView.set(View(activity))
+                root.get().addView(
+                    blurView.get(),
+                    FrameLayout.LayoutParams(40, 40),
+                )
+                activity.setContentView(root.get())
+                capture.setSourceWindow(activity.window)
+            }
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                blurView.get().width == 40
+            }
+            scenario.onActivity {
+                assertFalse(
+                    capture.capture(blurView.get(), root.get(), output, 1f),
+                )
+            }
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                DecorViewCapture::class.java
+                    .getDeclaredField("windowDeliveryPending")
+                    .apply { isAccessible = true }
+                    .getBoolean(capture)
+            }
+
+            scenario.onActivity { activity ->
+                surfaceView.set(SurfaceView(activity))
+                root.get().addView(
+                    surfaceView.get(),
+                    FrameLayout.LayoutParams(20, 20),
+                )
+            }
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                surfaceView.get().width == 20
+            }
+
+            scenario.onActivity {
+                DecorViewCapture::class.java
+                    .getDeclaredField("windowDeliveryPending")
+                    .apply { isAccessible = true }
+                    .setBoolean(capture, false)
+                DecorViewCapture::class.java
+                    .getDeclaredField("windowPending")
+                    .apply { isAccessible = true }
+                    .setBoolean(capture, true)
+
+                val surfaceCapture = DecorViewCapture::class.java
+                    .getDeclaredField("surfaceCapture")
+                    .apply { isAccessible = true }
+                    .get(capture)
+                val surfaceFrames = SurfaceCapture::class.java
+                    .getDeclaredField("surfaceFrames")
+                    .apply { isAccessible = true }
+                    .get(surfaceCapture) as MutableMap<*, *>
+                surfaceFrames.clear()
+
+                assertFalse(capture.capture(blurView.get(), root.get(), output, 1f))
+                assertTrue(
+                    surfaceFrames.isEmpty(),
+                    "A pending Window PixelCopy must not rescan SurfaceViews it cannot use",
+                )
+            }
+        }
+
+        capture.release()
+        output.recycle()
+    }
+
+    @Test
+    fun windowPixelCopyReusesPlaneBitmapBetweenCaptures() {
+        val capture = DecorViewCapture()
+        val output = Bitmap.createBitmap(40, 40, Bitmap.Config.ARGB_8888)
+        val firstPlane = AtomicReference<Bitmap>()
+        val secondPlane = AtomicReference<Bitmap>()
+
+        fun retainedPlane(): Bitmap? = DecorViewCapture::class.java
+            .getDeclaredField("windowPlaneBack")
+            .apply { isAccessible = true }
+            .get(capture) as? Bitmap
+
+        launchEmptyActivity().use { scenario ->
+            scenario.onActivity { activity ->
+                capture.setSourceWindow(activity.window)
+                capture.capture(
+                    activity.window.decorView,
+                    activity.window.decorView,
+                    output,
+                    4f,
+                )
+            }
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                scenario.onActivity { firstPlane.set(retainedPlane()) }
+                firstPlane.get() != null
+            }
+
+            scenario.onActivity { activity ->
+                repeat(2) {
+                    capture.capture(
+                        activity.window.decorView,
+                        activity.window.decorView,
+                        output,
+                        4f,
+                    )
+                }
+            }
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                scenario.onActivity { secondPlane.set(retainedPlane()) }
+                secondPlane.get() != null
+            }
+
+            assertTrue(
+                firstPlane.get() === secondPlane.get(),
+                "Same-size Window PixelCopy requests must reuse their plane scratch bitmap",
+            )
+        }
+
+        capture.release()
+        output.recycle()
+    }
+
+    @Test
+    fun uniformOpenGLFallbackReusesReadbackBuffer() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val input = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)
+        val algorithm = OpenGLBlur()
+        assertTrue(algorithm.prepare(context, input.width, input.height, 12f))
+        listOf(
+            "dsHalfPixelLoc",
+            "dsPositionLoc",
+            "dsTexCoordLoc",
+            "dsTextureLoc",
+            "usHalfPixelLoc",
+            "usPositionLoc",
+            "usTexCoordLoc",
+            "usTextureLoc",
+        ).forEach { fieldName ->
+            assertTrue(
+                OpenGLBlur::class.java.getDeclaredField(fieldName).run {
+                    isAccessible = true
+                    getInt(algorithm)
+                } >= 0,
+                "$fieldName must be cached after shader linking",
+            )
+        }
+
+        algorithm.blur(input, 12f)
+        val bufferField = OpenGLBlur::class.java
+            .getDeclaredField("readPixelsBuffer")
+            .apply { isAccessible = true }
+        val firstBuffer = bufferField.get(algorithm)
+
+        algorithm.blur(input, 12f)
+        assertTrue(
+            firstBuffer === bufferField.get(algorithm),
+            "Uniform fallback blur must reuse its direct readback buffer",
+        )
+
+        algorithm.release()
+        assertTrue(
+            bufferField.get(algorithm) == null,
+            "Uniform fallback blur must release its direct readback buffer",
+        )
+        input.recycle()
+    }
+
+    @Test
+    fun variableOpenGLFallbackReleasesReadbackBuffer() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val input = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)
+        val algorithm = VariableOpenGLBlur().apply {
+            setGradient(BlurGradient.verticalGradient(0f, 12f))
+        }
+        assertTrue(algorithm.prepare(context, input.width, input.height, 12f))
+        algorithm.blur(input, 12f)
+
+        val bufferField = VariableOpenGLBlur::class.java
+            .getDeclaredField("readPixelsBuffer")
+            .apply { isAccessible = true }
+        assertTrue(bufferField.get(algorithm) != null)
+
+        algorithm.release()
+        assertTrue(
+            bufferField.get(algorithm) == null,
+            "Variable fallback blur must release its direct readback buffer",
+        )
+        input.recycle()
     }
 
     @Test
@@ -2121,6 +3107,89 @@ class StackedBlurOverlayTest {
         }
     }
 
+    @Test
+    fun removingInjectedCaptureSourcesClearsRememberedBlurViews() {
+        for (gradient in listOf<BlurGradientType?>(null, BlurGradientType.Linear())) {
+            val useInjectedSources = mutableStateOf(true)
+            val initialBlurView = AtomicReference<View>()
+            val overlayState = AtomicReference<BlurOverlayState>()
+            val readinessAfterSourceRemoval = AtomicInteger(-1)
+
+            launchEmptyActivity().use { scenario ->
+                scenario.onActivity { activity ->
+                    activity.setContent {
+                        val platformContext = if (useInjectedSources.value) {
+                            BlurOverlayPlatformContext(
+                                listOf(
+                                    AndroidBlurOverlayCaptureSource(
+                                        activity.window.decorView,
+                                        activity.window,
+                                    ),
+                                ),
+                            )
+                        } else {
+                            BlurOverlayPlatformContext.Default
+                        }
+                        CompositionLocalProvider(
+                            LocalBlurOverlayPlatformContext provides platformContext,
+                        ) {
+                            val state = rememberBlurOverlayState(
+                                BlurOverlayConfig(
+                                    radius = 12f,
+                                    gradient = gradient,
+                                    isLive = false,
+                                ),
+                            )
+                            SideEffect { overlayState.set(state) }
+                            BlurOverlay(
+                                state = state,
+                                modifier = Modifier.fillMaxSize(),
+                            ) {}
+                            SideEffect {
+                                if (!useInjectedSources.value) {
+                                    readinessAfterSourceRemoval.compareAndSet(
+                                        -1,
+                                        if (state.isReady) 1 else 0,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                composeRule.waitUntil(timeoutMillis = 10_000) {
+                    overlayState.get()?.isReady == true
+                }
+
+                scenario.onActivity { activity ->
+                    val blurView = requireNotNull(findBlurCaptureView(activity.window.decorView))
+                    initialBlurView.set(blurView)
+                    assertTrue(
+                        captureSources(blurView)?.isNotEmpty() == true,
+                        "${blurView.javaClass.simpleName} must start with injected capture sources",
+                    )
+                    useInjectedSources.value = false
+                }
+                composeRule.waitForIdle()
+                assertTrue(
+                    readinessAfterSourceRemoval.get() == 0,
+                    "Changing capture sources must close the readiness gate synchronously",
+                )
+
+                scenario.onActivity { activity ->
+                    val blurView = requireNotNull(findBlurCaptureView(activity.window.decorView))
+                    assertTrue(
+                        blurView === initialBlurView.get(),
+                        "Changing platform context must reuse the remembered blur view",
+                    )
+                    assertTrue(
+                        captureSources(blurView) == null,
+                        "${blurView.javaClass.simpleName} must clear removed capture sources",
+                    )
+                }
+            }
+        }
+    }
+
     private fun launchEmptyActivity(): ActivityScenario<MainActivity> {
         val intent = Intent(
             ApplicationProvider.getApplicationContext(),
@@ -2246,6 +3315,44 @@ class StackedBlurOverlayTest {
             }
         }
     }
+
+    private fun findBlurCaptureView(view: View): View? {
+        if (view is BlurView || view is VariableBlurView) return view
+        if (view !is ViewGroup) return null
+        for (index in 0 until view.childCount) {
+            findBlurCaptureView(view.getChildAt(index))?.let { return it }
+        }
+        return null
+    }
+
+    private fun View.isLiveBlurView(): Boolean = when (this) {
+        is BlurView -> isLive()
+        is VariableBlurView -> isLive()
+        else -> false
+    }
+
+    private fun captureSources(blurView: View): List<*>? {
+        val controller = blurView.javaClass.getDeclaredField("blurController").let { field ->
+            field.isAccessible = true
+            requireNotNull(field.get(blurView))
+        }
+        val capture = controller.javaClass.getDeclaredField("capture").let { field ->
+            field.isAccessible = true
+            requireNotNull(field.get(controller))
+        }
+        return capture.javaClass.getDeclaredField("captureSources").let { field ->
+            field.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            field.get(capture) as? List<*>
+        }
+    }
+}
+
+private enum class AndroidReadinessMode {
+    DISABLED,
+    RENDER_EFFECT,
+    UNIFORM_BACKDROP,
+    GRADIENT_BACKDROP,
 }
 
 @androidx.compose.runtime.Composable
@@ -2737,3 +3844,84 @@ private fun assertTextureGateResets(
         surfaceTexture.release()
     }
 }
+
+private fun assertCaptureSourceChangeResetsTextureGate(
+    owner: Any,
+    textureView: TextureView,
+    hasFirstFrame: () -> Boolean,
+    setOnFrameLostListener: ((() -> Unit)?) -> Unit,
+) {
+    val surfaceTexture = SurfaceTexture(0)
+    val frameLost = AtomicBoolean(false)
+    try {
+        setOnFrameLostListener { frameLost.set(true) }
+        owner.javaClass.getDeclaredField("hasRenderedToOutputSurface").apply {
+            isAccessible = true
+            setBoolean(owner, true)
+        }
+        checkNotNull(textureView.surfaceTextureListener)
+            .onSurfaceTextureUpdated(surfaceTexture)
+        assertTrue(hasFirstFrame())
+        assertTrue(textureView.alpha == 1f)
+
+        val sourceClass = Class.forName(
+            "io.github.ezoushen.blur.capture.BackdropCaptureSource",
+        )
+        val source = sourceClass.declaredConstructors
+            .single { it.parameterCount == 3 }
+            .apply {
+                isAccessible = true
+            }.newInstance(View(textureView.context), null, null)
+        owner.javaClass.declaredMethods
+            .single { it.name.startsWith("setBlurredWindows") }
+            .apply { isAccessible = true }
+            .invoke(owner, listOf(source))
+
+        assertTrue(!hasFirstFrame(), "A new source must revoke first-frame readiness")
+        assertTrue(textureView.alpha == 0f, "A new source must hide the previous frame")
+        assertTrue(frameLost.get(), "A new source must notify its host that readiness was lost")
+    } finally {
+        setOnFrameLostListener(null)
+        surfaceTexture.release()
+    }
+}
+
+private fun surfaceTextureCaptureWidth(view: View): Int {
+    val capture = surfaceTextureCapture(view)
+    return capture.javaClass.getDeclaredField("lastWidth").run {
+        isAccessible = true
+        getInt(capture)
+    }
+}
+
+private fun surfaceTexture(view: View): Any {
+    val capture = surfaceTextureCapture(view)
+    return capture.javaClass.getDeclaredField("surfaceTexture").run {
+        isAccessible = true
+        requireNotNull(get(capture))
+    }
+}
+
+private fun surfaceTextureCapture(view: View): Any {
+    val controller = blurController(view)
+    return controller.javaClass.getDeclaredField("surfaceTextureCapture").run {
+        isAccessible = true
+        requireNotNull(get(controller))
+    }
+}
+
+private fun blurControllerHasPendingDirty(view: View): Boolean {
+    val controller = blurController(view)
+    return controller.javaClass.getMethod("hasPendingDirty").invoke(controller) as Boolean
+}
+
+private fun blurControllerHasOutputSurface(view: View): Boolean {
+    val controller = blurController(view)
+    return controller.javaClass.getMethod("hasOutputSurface").invoke(controller) as Boolean
+}
+
+private fun blurController(view: View): Any =
+    view.javaClass.getDeclaredField("blurController").run {
+        isAccessible = true
+        requireNotNull(get(view))
+    }

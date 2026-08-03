@@ -991,6 +991,7 @@ class VariableOpenGLBlur : BlurAlgorithm {
 
         outputBitmap?.recycle()
         outputBitmap = null
+        readPixelsBuffer = null
 
         lastWidth = 0
         lastHeight = 0

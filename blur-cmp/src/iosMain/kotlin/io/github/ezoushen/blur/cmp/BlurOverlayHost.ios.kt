@@ -66,6 +66,11 @@ actual fun BlurOverlayHost(
     content: @Composable () -> Unit,
 ) {
     val config = state.config
+    DisposableEffect(state) {
+        onDispose {
+            state.isReady = false
+        }
+    }
 
     if (!state.isEnabled) {
         SideEffect { state.isReady = true }
@@ -107,11 +112,12 @@ private fun InjectedWindowBlurOverlay(
         if (rootView != null) {
             blurState.setupAsBackdrop(rootView, config)
         }
-        state.isReady = true
         onDispose {
-            state.isReady = false
             blurState.cleanupBackdrop()
         }
+    }
+    SideEffect {
+        state.isReady = blurState.hasBackdrop
     }
 
     LaunchedEffect(config) {
@@ -207,12 +213,13 @@ private fun IntegratedBlurOverlay(
 
             blurState.containerViewController = containerVC
         }
-        state.isReady = true
 
         onDispose {
-            state.isReady = false
             blurState.cleanupIntegrated()
         }
+    }
+    SideEffect {
+        state.isReady = blurState.hasBackdrop
     }
 
     LaunchedEffect(config) {
@@ -262,6 +269,9 @@ internal class IosBlurState {
     private var isBeforeBlurActive = false
 
     var containerViewController: UIViewController? = null
+
+    internal val hasBackdrop: Boolean
+        get() = backdropLayer != null
 
     fun applyAlpha(alpha: Float) {
         container?.setAlpha(alpha.toDouble())

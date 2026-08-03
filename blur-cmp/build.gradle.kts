@@ -50,8 +50,23 @@ kotlin {
             implementation("androidx.graphics:graphics-core:1.0.2")
         }
 
+        androidUnitTest.dependencies {
+            implementation(kotlin("test"))
+        }
+
+        androidInstrumentedTest.dependencies {
+            implementation(kotlin("test"))
+            implementation(libs.androidx.test.core)
+            implementation(libs.androidx.test.runner)
+            implementation(libs.androidx.test.ext.junit)
+        }
+
         iosMain.dependencies {
             // iOS blur views bundled as Swift sources
+        }
+
+        iosTest.dependencies {
+            implementation(kotlin("test"))
         }
     }
 }
@@ -74,6 +89,7 @@ android {
         // Can also be set via: ./gradlew assembleDebug -Pblur.perf.enabled=true
         val perfEnabled = project.findProperty("blur.perf.enabled")?.toString()?.toBoolean() ?: false
         buildConfigField("boolean", "BLUR_PERF_ENABLED", perfEnabled.toString())
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     compileOptions {

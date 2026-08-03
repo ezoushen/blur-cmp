@@ -87,6 +87,18 @@ class OpenGLBlur @JvmOverloads constructor(
     private var downsampleProgram = 0
     private var downsampleExternalProgram = 0
     private var upsampleProgram = 0
+    private var dsHalfPixelLoc = -1
+    private var dsPositionLoc = -1
+    private var dsTexCoordLoc = -1
+    private var dsTextureLoc = -1
+    private var dsExtHalfPixelLoc = -1
+    private var dsExtPositionLoc = -1
+    private var dsExtTexCoordLoc = -1
+    private var dsExtTextureLoc = -1
+    private var usHalfPixelLoc = -1
+    private var usPositionLoc = -1
+    private var usTexCoordLoc = -1
+    private var usTextureLoc = -1
 
     // EGLImage zero-copy input (API 29+)
     private var inputTexture = 0
@@ -100,6 +112,7 @@ class OpenGLBlur @JvmOverloads constructor(
     private var textures: IntArray? = null
 
     private var outputBitmap: Bitmap? = null
+    private var readPixelsBuffer: ByteBuffer? = null
     private var lastWidth = 0
     private var lastHeight = 0
     private var isInitialized = false
@@ -250,8 +263,13 @@ class OpenGLBlur @JvmOverloads constructor(
 
             // Fallback: glReadPixels
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbs[0])
-            val buffer = ByteBuffer.allocateDirect(lastWidth * lastHeight * 4)
-                .order(ByteOrder.nativeOrder())
+            val bufferSize = lastWidth * lastHeight * 4
+            var buffer = readPixelsBuffer
+            if (buffer == null || buffer.capacity() < bufferSize) {
+                buffer = ByteBuffer.allocateDirect(bufferSize).order(ByteOrder.nativeOrder())
+                readPixelsBuffer = buffer
+            }
+            buffer.clear()
             GLES20.glReadPixels(0, 0, lastWidth, lastHeight, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buffer)
             buffer.rewind()
             output.copyPixelsFromBuffer(buffer)
@@ -286,6 +304,10 @@ class OpenGLBlur @JvmOverloads constructor(
             val isFirstExternalPass = i == 0 && useExternalInput && downsampleExternalProgram != 0
             val program = if (isFirstExternalPass) downsampleExternalProgram else downsampleProgram
             val textureTarget = if (isFirstExternalPass) GLES11Ext.GL_TEXTURE_EXTERNAL_OES else GLES20.GL_TEXTURE_2D
+            val halfPixelLoc = if (isFirstExternalPass) dsExtHalfPixelLoc else dsHalfPixelLoc
+            val positionLoc = if (isFirstExternalPass) dsExtPositionLoc else dsPositionLoc
+            val texCoordLoc = if (isFirstExternalPass) dsExtTexCoordLoc else dsTexCoordLoc
+            val textureLoc = if (isFirstExternalPass) dsExtTextureLoc else dsTextureLoc
 
             GLES20.glUseProgram(program)
 
@@ -295,10 +317,9 @@ class OpenGLBlur @JvmOverloads constructor(
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(textureTarget, currentTexture)
 
-            val halfPixelLoc = GLES20.glGetUniformLocation(program, "uHalfPixel")
             GLES20.glUniform2f(halfPixelLoc, offset * 0.5f / currentWidth, offset * 0.5f / currentHeight)
 
-            drawQuad(program)
+            drawQuad(positionLoc, texCoordLoc, textureLoc)
 
             // Unbind external texture after first pass
             if (isFirstExternalPass) {
@@ -333,11 +354,15 @@ class OpenGLBlur @JvmOverloads constructor(
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, currentTexture)
 
-            val halfPixelLoc = GLES20.glGetUniformLocation(upsampleProgram, "uHalfPixel")
-            GLES20.glUniform2f(halfPixelLoc, offset * 0.5f / currentWidth, offset * 0.5f / currentHeight)
+            GLES20.glUniform2f(usHalfPixelLoc, offset * 0.5f / currentWidth, offset * 0.5f / currentHeight)
 
             // Flip Y when rendering to window surface (OpenGL → Android Y-axis)
-            drawQuad(upsampleProgram, flipY = i == 0 && renderToWindowSurface)
+            drawQuad(
+                usPositionLoc,
+                usTexCoordLoc,
+                usTextureLoc,
+                flipY = i == 0 && renderToWindowSurface,
+            )
 
             currentTexture = texs[if (i == 0) 0 else i]
             currentWidth = targetWidth
@@ -695,6 +720,23 @@ class OpenGLBlur @JvmOverloads constructor(
             OpenGLBlurShaders.DOWNSAMPLE_EXTERNAL_FRAGMENT_SHADER,
         )
 
+        dsHalfPixelLoc = GLES20.glGetUniformLocation(downsampleProgram, "uHalfPixel")
+        dsPositionLoc = GLES20.glGetAttribLocation(downsampleProgram, "aPosition")
+        dsTexCoordLoc = GLES20.glGetAttribLocation(downsampleProgram, "aTexCoord")
+        dsTextureLoc = GLES20.glGetUniformLocation(downsampleProgram, "uTexture")
+
+        usHalfPixelLoc = GLES20.glGetUniformLocation(upsampleProgram, "uHalfPixel")
+        usPositionLoc = GLES20.glGetAttribLocation(upsampleProgram, "aPosition")
+        usTexCoordLoc = GLES20.glGetAttribLocation(upsampleProgram, "aTexCoord")
+        usTextureLoc = GLES20.glGetUniformLocation(upsampleProgram, "uTexture")
+
+        if (downsampleExternalProgram != 0) {
+            dsExtHalfPixelLoc = GLES20.glGetUniformLocation(downsampleExternalProgram, "uHalfPixel")
+            dsExtPositionLoc = GLES20.glGetAttribLocation(downsampleExternalProgram, "aPosition")
+            dsExtTexCoordLoc = GLES20.glGetAttribLocation(downsampleExternalProgram, "aTexCoord")
+            dsExtTextureLoc = GLES20.glGetUniformLocation(downsampleExternalProgram, "uTexture")
+        }
+
         return true
     }
 
@@ -858,11 +900,12 @@ class OpenGLBlur @JvmOverloads constructor(
         return true
     }
 
-    private fun drawQuad(program: Int, flipY: Boolean = false) {
-        val positionLoc = GLES20.glGetAttribLocation(program, "aPosition")
-        val texCoordLoc = GLES20.glGetAttribLocation(program, "aTexCoord")
-        val textureLoc = GLES20.glGetUniformLocation(program, "uTexture")
-
+    private fun drawQuad(
+        positionLoc: Int,
+        texCoordLoc: Int,
+        textureLoc: Int,
+        flipY: Boolean = false,
+    ) {
         GLES20.glUniform1i(textureLoc, 0)
 
         GLES20.glEnableVertexAttribArray(positionLoc)
@@ -943,6 +986,7 @@ class OpenGLBlur @JvmOverloads constructor(
 
         outputBitmap?.recycle()
         outputBitmap = null
+        readPixelsBuffer = null
 
         lastWidth = 0
         lastHeight = 0

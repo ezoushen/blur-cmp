@@ -20,10 +20,12 @@ class BlurOverlayState internal constructor(initialConfig: BlurOverlayConfig) {
     var alpha: Float by mutableStateOf(1f)
 
     /**
-     * Whether the platform renderer has produced a displayable blur frame.
+     * Whether the platform renderer is ready for the overlay to be revealed.
      *
-     * Callers that own a separate overlay window can keep that window transparent until this
-     * becomes true, avoiding an uninitialized surface flash without guessing a frame count.
+     * A visible blur becomes ready only after its backing layer or first frame exists. A disabled
+     * or no-frame-required configuration can be ready without producing a blur frame. Callers that
+     * own a separate overlay window can keep it transparent until this becomes true, avoiding an
+     * uninitialized surface flash without guessing a frame count.
      */
     var isReady: Boolean by mutableStateOf(false)
         internal set

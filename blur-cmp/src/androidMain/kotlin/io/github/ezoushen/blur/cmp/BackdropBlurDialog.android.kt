@@ -15,12 +15,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -29,7 +30,9 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.doOnPreDraw
+import io.github.ezoushen.blur.capture.BackdropCapturePrefix
 import io.github.ezoushen.blur.capture.BackdropCaptureSource
+import io.github.ezoushen.blur.capture.WindowPixelCopyCoordinator
 import java.util.WeakHashMap
 
 internal class AndroidBackdropLayer {
@@ -54,12 +57,26 @@ internal class AndroidBackdropLayer {
     }
 }
 
+internal class AndroidBackdropReadiness(
+    private val parent: AndroidBackdropReadiness?,
+    private val layer: AndroidBackdropLayer,
+) {
+    private val ready = derivedStateOf(structuralEqualityPolicy()) {
+        (parent?.isReady ?: true) && layer.isReady
+    }
+
+    val isReady: Boolean
+        get() = ready.value
+}
+
 internal data class AndroidBackdropStack(
-    val captureSources: List<BackdropCaptureSource>,
+    val capturePrefix: BackdropCapturePrefix,
+    val pixelCopyCoordinator: WindowPixelCopyCoordinator?,
     val currentRoot: View,
     val currentWindow: Window?,
     val depth: Int,
-    val lowerLayers: List<AndroidBackdropLayer>,
+    val lowerReadiness: AndroidBackdropReadiness?,
+    val readiness: AndroidBackdropReadiness,
     val currentLayer: AndroidBackdropLayer,
 )
 
@@ -71,33 +88,47 @@ private class BackdropWindowEntry(
 ) {
     var root: View? by mutableStateOf(null)
     var window: Window? by mutableStateOf(null)
+    var pixelCopyCoordinator: WindowPixelCopyCoordinator? by mutableStateOf(null)
+    var previous: BackdropWindowEntry? by mutableStateOf(null)
+    var capturePrefix: BackdropCapturePrefix? by mutableStateOf(null)
+    var readiness: AndroidBackdropReadiness? by mutableStateOf(null)
+}
+
+private class BackdropWindowGroup {
+    val entries = mutableListOf<BackdropWindowEntry>()
+    val pixelCopyCoordinator = WindowPixelCopyCoordinator()
 }
 
 private object BackdropWindowRegistry {
     private val entriesByBaseRoot =
-        WeakHashMap<View, MutableList<BackdropWindowEntry>>()
+        WeakHashMap<View, BackdropWindowGroup>()
 
     fun register(baseRoot: View, entry: BackdropWindowEntry) {
-        entriesByBaseRoot
-            .getOrPut(baseRoot) { mutableStateListOf() }
-            .add(entry)
+        val group = entriesByBaseRoot.getOrPut(baseRoot, ::BackdropWindowGroup)
+        entry.previous = group.entries.lastOrNull()
+        group.entries.add(entry)
+        entry.pixelCopyCoordinator = group.pixelCopyCoordinator
     }
 
     fun unregister(baseRoot: View, entry: BackdropWindowEntry) {
-        entriesByBaseRoot[baseRoot]?.let { entries ->
-            entries.remove(entry)
-            if (entries.isEmpty()) entriesByBaseRoot.remove(baseRoot)
+        entriesByBaseRoot[baseRoot]?.let { group ->
+            val index = group.entries.indexOf(entry)
+            if (index >= 0) {
+                group.pixelCopyCoordinator.invalidatePreparedTopology()
+                group.entries.getOrNull(index + 1)?.previous = entry.previous
+                group.entries.removeAt(index)
+            }
+            entry.previous = null
+            entry.root = null
+            entry.window = null
+            entry.capturePrefix = null
+            entry.readiness = null
+            entry.pixelCopyCoordinator = null
+            if (group.entries.isEmpty()) {
+                entriesByBaseRoot.remove(baseRoot)
+                group.pixelCopyCoordinator.close()
+            }
         }
-    }
-
-    fun previous(
-        baseRoot: View,
-        entry: BackdropWindowEntry,
-    ): List<BackdropWindowEntry> {
-        val entries = entriesByBaseRoot[baseRoot] ?: return emptyList()
-        val index = entries.indexOf(entry)
-        val preceding = if (index < 0) entries else entries.subList(0, index)
-        return preceding.filter { it.root != null }
     }
 }
 
@@ -148,36 +179,79 @@ actual fun BackdropBlurDialog(
                 layer.contentReady = false
             }
         }
-        val previousEntries = if (parentStack == null) {
-            BackdropWindowRegistry.previous(lowerRoot, registryEntry)
-        } else {
-            emptyList()
-        }
+        val previousEntry = registryEntry.previous.takeIf { parentStack == null }
         val currentWindow = (view.parent as? DialogWindowProvider)?.window
-        val captureSources = if (parentStack != null) {
-            parentStack.captureSources + BackdropCaptureSource(
+        val pixelCopyCoordinator = parentStack?.pixelCopyCoordinator
+            ?: registryEntry.pixelCopyCoordinator
+        val activityPrefix = remember(lowerRoot, activityWindow, pixelCopyCoordinator) {
+            BackdropCapturePrefix(
+                parent = null,
+                source = BackdropCaptureSource(
+                    view = lowerRoot,
+                    window = activityWindow,
+                    pixelCopyCoordinator = pixelCopyCoordinator,
+                ),
+            )
+        }
+        val capturePrefix = if (parentStack != null) {
+            remember(
+                parentStack.capturePrefix,
                 parentStack.currentRoot,
                 parentStack.currentWindow,
-            )
+                pixelCopyCoordinator,
+            ) {
+                BackdropCapturePrefix(
+                    parent = parentStack.capturePrefix,
+                    source = BackdropCaptureSource(
+                        view = parentStack.currentRoot,
+                        window = parentStack.currentWindow,
+                        pixelCopyCoordinator = pixelCopyCoordinator,
+                    ),
+                )
+            }
         } else {
-            listOf(BackdropCaptureSource(lowerRoot, activityWindow)) +
-                previousEntries.mapNotNull { entry ->
-                    entry.root?.let { BackdropCaptureSource(it, entry.window) }
-                }
+            previousEntry?.capturePrefix ?: activityPrefix
+        }
+        DisposableEffect(pixelCopyCoordinator, capturePrefix) {
+            onDispose {
+                pixelCopyCoordinator?.invalidatePreparedTopology()
+            }
+        }
+        val lowerReadiness = parentStack?.readiness ?: previousEntry?.readiness
+        val readiness = remember(lowerReadiness, layer) {
+            AndroidBackdropReadiness(lowerReadiness, layer)
         }
         val stack = AndroidBackdropStack(
-            captureSources = captureSources,
+            capturePrefix = capturePrefix,
+            pixelCopyCoordinator = pixelCopyCoordinator,
             currentRoot = view.rootView,
             currentWindow = currentWindow,
-            depth = captureSources.size - 1,
-            lowerLayers = parentStack?.let {
-                it.lowerLayers + it.currentLayer
-            } ?: previousEntries.map { it.layer },
+            depth = capturePrefix.size - 1,
+            lowerReadiness = lowerReadiness,
+            readiness = readiness,
             currentLayer = layer,
         )
+        val registryCapturePrefix = if (parentStack == null) {
+            remember(capturePrefix, view.rootView, currentWindow, pixelCopyCoordinator) {
+                BackdropCapturePrefix(
+                    parent = capturePrefix,
+                    source = BackdropCaptureSource(
+                        view = view.rootView,
+                        window = currentWindow,
+                        pixelCopyCoordinator = pixelCopyCoordinator,
+                    ),
+                )
+            }
+        } else {
+            null
+        }
         SideEffect {
-            registryEntry.root = view.rootView
-            registryEntry.window = currentWindow
+            if (parentStack == null) {
+                registryEntry.root = view.rootView
+                registryEntry.window = currentWindow
+                registryEntry.capturePrefix = registryCapturePrefix
+                registryEntry.readiness = readiness
+            }
             val window = currentWindow ?: return@SideEffect
             window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
             window.setWindowAnimations(0)

@@ -10,11 +10,68 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.TextureView
 import android.view.View
+import android.view.ViewTreeObserver
 import io.github.ezoushen.blur.view.BlurView
 import io.github.ezoushen.blur.view.VariableBlurView
 import java.lang.ref.WeakReference
 import java.util.IdentityHashMap
 import java.util.WeakHashMap
+
+internal fun interface SurfacePixelCopier {
+    fun request(
+        surface: Surface,
+        destination: Bitmap,
+        onResult: (Int) -> Unit,
+        handler: Handler,
+    )
+}
+
+internal class SurfaceViewPresenceTracker {
+    private var sourceView: View? = null
+    private var sourceObserver: ViewTreeObserver? = null
+    private var hierarchyDirty = true
+    private var containsSurfaceView = false
+    private var cachedSurfaceViews: List<View> = emptyList()
+    private val hierarchyListener = ViewTreeObserver.OnGlobalLayoutListener {
+        hierarchyDirty = true
+    }
+
+    fun setSource(view: View) {
+        if (sourceView === view) return
+        release()
+        sourceView = view
+        sourceObserver = view.viewTreeObserver.also {
+            it.addOnGlobalLayoutListener(hierarchyListener)
+        }
+    }
+
+    fun containsSurfaceView(): Boolean {
+        refreshHierarchy()
+        return containsSurfaceView
+    }
+
+    fun surfaceViews(): List<View> {
+        refreshHierarchy()
+        return cachedSurfaceViews
+    }
+
+    private fun refreshHierarchy() {
+        if (!hierarchyDirty) return
+        cachedSurfaceViews = sourceView?.let(SurfaceCapture::findSurfaceViews).orEmpty()
+        containsSurfaceView = cachedSurfaceViews.any { it is SurfaceView }
+        hierarchyDirty = false
+    }
+
+    fun release() {
+        sourceObserver?.takeIf { it.isAlive }
+            ?.removeOnGlobalLayoutListener(hierarchyListener)
+        sourceView = null
+        sourceObserver = null
+        hierarchyDirty = true
+        containsSurfaceView = false
+        cachedSurfaceViews = emptyList()
+    }
+}
 
 /**
  * Captures content from SurfaceView and TextureView.
@@ -31,7 +88,11 @@ import java.util.WeakHashMap
  * - SurfaceView capture requires API 24+ for reliable results
  * - Some DRM-protected content cannot be captured
  */
-class SurfaceCapture : ContentCapture {
+class SurfaceCapture internal constructor(
+    private val pixelCopier: SurfacePixelCopier,
+) : ContentCapture {
+    constructor() : this(AndroidSurfacePixelCopier)
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private val surfaceFrames = IdentityHashMap<SurfaceView, SurfaceFrame>()
     private val textureFrames = IdentityHashMap<TextureView, RetryFrame>()
@@ -128,15 +189,33 @@ class SurfaceCapture : ContentCapture {
             Canvas(output).drawBitmap(current, 0f, 0f, null)
         }
 
+        val requestVersion = captureRequestVersion(blurView)
+        if (frame.deliveryPending && hasCurrent &&
+            frame.deliveryRequestVersion == requestVersion
+        ) {
+            frame.deliveryPending = false
+            frame.deliveredRequestVersion = frame.deliveryRequestVersion
+            return true
+        }
+        frame.deliveryPending = false
+
         val holder = surfaceView.holder ?: return false
         val surface = holder.surface ?: return false
 
         if (!surface.isValid) {
             scheduleRetry(blurView, frame)
-            return hasCurrent
+            return hasCurrent && (isLive(blurView) ||
+                requestVersion == frame.deliveredRequestVersion)
         }
 
-        return captureSurfaceWithPixelCopy(blurView, surface, output, frame, hasCurrent)
+        return captureSurfaceWithPixelCopy(
+            blurView,
+            surface,
+            output,
+            frame,
+            hasCurrent,
+            requestVersion,
+        )
     }
 
     /**
@@ -148,15 +227,8 @@ class SurfaceCapture : ContentCapture {
         output: Bitmap,
         frame: SurfaceFrame,
         hasCurrent: Boolean,
+        requestVersion: Long,
     ): Boolean {
-        if (frame.deliveryPending && hasCurrent) {
-            frame.deliveryPending = false
-            frame.deliveredRequestVersion = frame.deliveryRequestVersion
-            return true
-        }
-        frame.deliveryPending = false
-
-        val requestVersion = captureRequestVersion(blurView)
         val shouldCapture = isLive(blurView) ||
             !hasCurrent ||
             requestVersion != frame.deliveredRequestVersion
@@ -175,15 +247,20 @@ class SurfaceCapture : ContentCapture {
             frame.back = null
             frame.pending = true
             try {
-                android.view.PixelCopy.request(
+                pixelCopier.request(
                     surface,
                     destination,
                     { result ->
-                        if (!frame.active || requestGeneration != frame.generation) {
+                        if (!frame.active) {
                             destination.recycle()
                             return@request
                         }
                         frame.pending = false
+                        if (requestGeneration != frame.generation) {
+                            frame.back = destination
+                            frame.blurView.get()?.let(::requestUpdate)
+                            return@request
+                        }
                         if (result == android.view.PixelCopy.SUCCESS) {
                             cancelRetry(frame)
                             frame.back = frame.front
@@ -255,7 +332,7 @@ class SurfaceCapture : ContentCapture {
             val callback = object : SurfaceHolder.Callback {
                 override fun surfaceCreated(holder: SurfaceHolder) {
                     invalidateGeneration(frame)
-                    frame.blurView.get()?.let(::requestUpdate)
+                    if (!frame.pending) frame.blurView.get()?.let(::requestUpdate)
                 }
 
                 override fun surfaceChanged(
@@ -265,7 +342,7 @@ class SurfaceCapture : ContentCapture {
                     height: Int,
                 ) {
                     invalidateGeneration(frame)
-                    frame.blurView.get()?.let(::requestUpdate)
+                    if (!frame.pending) frame.blurView.get()?.let(::requestUpdate)
                 }
 
                 override fun surfaceDestroyed(holder: SurfaceHolder) {
@@ -280,7 +357,6 @@ class SurfaceCapture : ContentCapture {
 
     private fun invalidateGeneration(frame: SurfaceFrame) {
         frame.generation++
-        frame.pending = false
         frame.deliveryPending = false
         frame.deliveredRequestVersion = Long.MIN_VALUE
         frame.deliveryRequestVersion = Long.MIN_VALUE
@@ -288,7 +364,7 @@ class SurfaceCapture : ContentCapture {
     }
 
     fun retainViews(activeViews: Collection<View>) {
-        val activeSet = activeViews.toSet()
+        val activeSet = activeViews as? Set<View> ?: activeViews.toSet()
         val iterator = surfaceFrames.entries.iterator()
         while (iterator.hasNext()) {
             val (view, frame) = iterator.next()
@@ -354,13 +430,16 @@ class SurfaceCapture : ContentCapture {
             return view is SurfaceView || view is TextureView
         }
 
-        internal fun isAboveWindow(surfaceView: SurfaceView): Boolean {
+        internal fun isAboveWindow(
+            surfaceView: SurfaceView,
+            transparentRegion: Region,
+            location: IntArray,
+        ): Boolean {
             val originallyWillNotDraw = surfaceView.willNotDraw()
             surfaceView.setWillNotDraw(true)
-            val transparentRegion = Region()
             return try {
+                transparentRegion.setEmpty()
                 surfaceView.gatherTransparentRegion(transparentRegion)
-                val location = IntArray(2)
                 surfaceView.getLocationInWindow(location)
                 !transparentRegion.contains(
                     location[0] + surfaceView.width / 2,
@@ -390,5 +469,16 @@ class SurfaceCapture : ContentCapture {
                 }
             }
         }
+    }
+}
+
+internal object AndroidSurfacePixelCopier : SurfacePixelCopier {
+    override fun request(
+        surface: Surface,
+        destination: Bitmap,
+        onResult: (Int) -> Unit,
+        handler: Handler,
+    ) {
+        android.view.PixelCopy.request(surface, destination, onResult, handler)
     }
 }

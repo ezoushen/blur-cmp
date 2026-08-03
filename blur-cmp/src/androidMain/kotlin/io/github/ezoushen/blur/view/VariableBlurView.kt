@@ -20,6 +20,8 @@ import io.github.ezoushen.blur.BlurConfig
 import io.github.ezoushen.blur.BlurGradient
 import io.github.ezoushen.blur.cmp.R
 import io.github.ezoushen.blur.VariableBlurController
+import io.github.ezoushen.blur.capture.AndroidBlurFrameDispatcher
+import io.github.ezoushen.blur.capture.BackdropCapturePrefix
 import io.github.ezoushen.blur.capture.BackdropCaptureSource
 import io.github.ezoushen.blur.capture.DecorViewCapture
 
@@ -67,6 +69,7 @@ class VariableBlurView @JvmOverloads constructor(
     private var blurredView: View? = null
     private var blurredWindow: Window? = null
     private var blurredSources: List<BackdropCaptureSource>? = null
+    private var blurredPrefix: BackdropCapturePrefix? = null
 
     private var blurController: VariableBlurController? = null
     private var decorView: View? = null
@@ -77,7 +80,7 @@ class VariableBlurView @JvmOverloads constructor(
     private var hasRenderedToOutputSurface = false
     private var blurTextureView: TextureView? = null
     private var blurSurface: Surface? = null
-    private var liveUpdatePosted = false
+    private var isAggregatedVisible = false
     private var blurUpdatePosted = false
     private var captureRequestVersion = 0L
     private var firstFrameListener: (() -> Unit)? = null
@@ -120,6 +123,7 @@ class VariableBlurView @JvmOverloads constructor(
     private val drawListener = ViewTreeObserver.OnDrawListener {
         if (
             isBlurEnabled &&
+            blurController?.hasPendingWindowCopy() != true &&
             (!hasFirstFrame || blurController?.hasPendingDirty() == true)
         ) {
             scheduleBlurUpdate()
@@ -147,23 +151,26 @@ class VariableBlurView @JvmOverloads constructor(
         }
     }
 
-    private val liveUpdate = object : Runnable {
-        override fun run() {
-            liveUpdatePosted = false
-            if (!isAttachedToWindow || !isLive) return
-
-            if (isBlurEnabled && isShown) {
-                blurController?.markContentDirty()
-                invalidate()
-            }
-            scheduleLiveUpdate()
+    private val liveFrameClient: () -> Boolean = {
+        if (!shouldUpdateLive()) {
+            false
+        } else if (blurController?.hasPendingWindowCopy() == true) {
+            true
+        } else {
+            blurController?.markContentDirty()
+            invalidate()
+            true
         }
     }
 
-    private fun scheduleLiveUpdate() {
-        if (isAttachedToWindow && isLive && !liveUpdatePosted) {
-            liveUpdatePosted = true
-            postDelayed(liveUpdate, 16L)
+    private fun shouldUpdateLive(): Boolean =
+        isAttachedToWindow && isLive && isBlurEnabled && isAggregatedVisible
+
+    private fun updateLiveFrameRegistration() {
+        if (shouldUpdateLive()) {
+            AndroidBlurFrameDispatcher.register(liveFrameClient)
+        } else {
+            AndroidBlurFrameDispatcher.unregister(liveFrameClient)
         }
     }
 
@@ -349,6 +356,7 @@ class VariableBlurView @JvmOverloads constructor(
     fun setBlurEnabled(enabled: Boolean) {
         if (isBlurEnabled != enabled) {
             isBlurEnabled = enabled
+            updateLiveFrameRegistration()
             invalidate()
         }
     }
@@ -373,11 +381,8 @@ class VariableBlurView @JvmOverloads constructor(
             if (live) {
                 blurController?.markContentDirty()
                 invalidate()
-                scheduleLiveUpdate()
-            } else {
-                removeCallbacks(liveUpdate)
-                liveUpdatePosted = false
             }
+            updateLiveFrameRegistration()
         }
     }
 
@@ -461,9 +466,12 @@ class VariableBlurView @JvmOverloads constructor(
      * @param view The view to use as the blur source.
      */
     fun setBlurredView(view: View) {
+        blurredPrefix = null
         blurredSources = null
         blurredView = view
         blurController?.init(this, view)
+        blurController?.setCapturePrefix(null)
+        blurController?.setCaptureSources(null)
         invalidate()
     }
 
@@ -473,13 +481,37 @@ class VariableBlurView @JvmOverloads constructor(
         blurController?.setSourceWindow(window)
     }
 
-    internal fun setBlurredWindows(sources: List<BackdropCaptureSource>) {
-        if (blurredSources == sources) return
-        blurredSources = sources
+    internal fun setBlurredWindows(sources: List<BackdropCaptureSource>?) {
+        val updatedSources = sources?.takeIf { it.isNotEmpty() }
+        if (blurredPrefix == null && blurredSources == updatedSources) return
+        hasFirstFrame = false
+        hasRenderedToOutputSurface = false
+        blurTextureView?.alpha = 0f
+        frameLostListener?.invoke()
+        blurredPrefix = null
+        blurredSources = updatedSources
         blurredWindow = null
-        blurredView = sources.last().view
-        blurController?.init(this, sources.last().view)
-        blurController?.setCaptureSources(sources)
+        val source = updatedSources?.last()?.view ?: decorView ?: getActivityDecorView()
+        blurredView = source
+        if (source != null) blurController?.init(this, source)
+        blurController?.setSourceWindow(null)
+        blurController?.setCaptureSources(updatedSources)
+        invalidate()
+    }
+
+    internal fun setBlurredPrefix(prefix: BackdropCapturePrefix?) {
+        if (blurredPrefix === prefix) return
+        hasFirstFrame = false
+        hasRenderedToOutputSurface = false
+        blurTextureView?.alpha = 0f
+        frameLostListener?.invoke()
+        blurredPrefix = prefix
+        blurredSources = null
+        blurredWindow = null
+        val source = prefix?.source?.view ?: decorView ?: getActivityDecorView()
+        blurredView = source
+        if (source != null) blurController?.init(this, source)
+        blurController?.setCapturePrefix(prefix)
         invalidate()
     }
 
@@ -487,8 +519,7 @@ class VariableBlurView @JvmOverloads constructor(
      * Updates the blur effect manually.
      */
     fun updateBlur() {
-        blurController?.invalidate()
-        invalidate()
+        requestSingleUpdate()
     }
 
     /**
@@ -508,22 +539,32 @@ class VariableBlurView @JvmOverloads constructor(
             blurController?.setConfig(blurConfig)
             blurController?.setGradient(blurGradient)
             blurController?.init(this, source)
-            blurController?.setCaptureSources(blurredSources)
-            if (blurredSources == null) blurController?.setSourceWindow(blurredWindow)
+            if (blurredPrefix != null) {
+                blurController?.setCapturePrefix(blurredPrefix)
+            } else {
+                blurController?.setCaptureSources(blurredSources)
+                if (blurredSources == null) blurController?.setSourceWindow(blurredWindow)
+            }
 
             // Forward any pending excluded views to the controller
             flushPendingExcludedViews()
 
             viewTreeObserver?.addOnDrawListener(drawListener)
-            scheduleLiveUpdate()
+            updateLiveFrameRegistration()
         }
+    }
+
+    override fun onVisibilityAggregated(isVisible: Boolean) {
+        super.onVisibilityAggregated(isVisible)
+        isAggregatedVisible = isVisible
+        updateLiveFrameRegistration()
     }
 
     override fun onDetachedFromWindow() {
         viewTreeObserver?.removeOnDrawListener(drawListener)
-        removeCallbacks(liveUpdate)
+        isAggregatedVisible = false
+        AndroidBlurFrameDispatcher.unregister(liveFrameClient)
         removeCallbacks(blurUpdate)
-        liveUpdatePosted = false
         blurUpdatePosted = false
 
         blurController?.setOutputSurface(null)
