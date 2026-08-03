@@ -589,6 +589,7 @@ internal class WindowPixelCopyCoordinator(
                     newEntries = emptyList(),
                     requestedWidth = request.viewport.outputWidth,
                     requestedHeight = request.viewport.outputHeight,
+                    usePreparedOutputReservation = true,
                 ) { result, lease ->
                     if (request.active) {
                         request.active = false
@@ -718,6 +719,17 @@ internal class WindowPixelCopyCoordinator(
             reusableBitmaps.getOrPut(key, ::ArrayDeque).addAll(reserved)
         }
         reservedReusableBitmaps.clear()
+    }
+
+    private fun takeReservedPreparedOutput(width: Int, height: Int): Bitmap? {
+        val key = bitmapSizeKey(width, height)
+        val bucket = reservedReusableBitmaps[key] ?: return null
+        val bitmap = bucket.removeLast()
+        reusableBitmapCount--
+        if (bucket.isEmpty()) reservedReusableBitmaps.remove(key)
+        extraBitmapCount++
+        updateReusableBitmapLimit()
+        return bitmap
     }
 
     private fun resolvePreparedDemand(node: PreparedNode) {
@@ -874,6 +886,7 @@ internal class WindowPixelCopyCoordinator(
         newEntries: List<PrefixEntry>,
         requestedWidth: Int = entry.width,
         requestedHeight: Int = entry.height,
+        usePreparedOutputReservation: Boolean = false,
         onResult: (Int, WindowPixelCopyLease?) -> Unit,
     ): WindowPixelCopyRequest {
         val subscriber = PrefixSubscriber(requestedWidth, requestedHeight, onResult)
@@ -884,6 +897,14 @@ internal class WindowPixelCopyCoordinator(
             mainHandler.post {
                 deliverCachedPrefix(entry, subscriber)
             }
+        }
+        if (usePreparedOutputReservation &&
+            (entry.width != requestedWidth || entry.height != requestedHeight)
+        ) {
+            subscriber.preparedOutput = takeReservedPreparedOutput(
+                requestedWidth,
+                requestedHeight,
+            )
         }
         newEntries.forEach { created ->
             if (isPrefixAttached(created)) startRawPrefixRequest(created)
@@ -1215,11 +1236,15 @@ internal class WindowPixelCopyCoordinator(
 
     private fun deliverCachedPrefix(entry: PrefixEntry, subscriber: PrefixSubscriber) {
         checkMainThread()
-        if (!subscriber.active) return
+        if (!subscriber.active) {
+            releasePreparedOutput(subscriber)
+            return
+        }
         if (closed || !isPrefixAttached(entry) || entry.result != PixelCopy.SUCCESS ||
             entry.bitmap == null
         ) {
             subscriber.active = false
+            releasePreparedOutput(subscriber)
             return
         }
         entry.subscribers.remove(subscriber)
@@ -1239,6 +1264,7 @@ internal class WindowPixelCopyCoordinator(
         if (!subscriber.active) return
         subscriber.active = false
         entry.subscribers.remove(subscriber)
+        releasePreparedOutput(subscriber)
         if (entry.prefixPending && entry.subscribers.isEmpty()) {
             entry.prefixPending = false
             releasePrefixEpoch(entry)
@@ -1278,10 +1304,13 @@ internal class WindowPixelCopyCoordinator(
     ): WindowPixelCopyLease? {
         val source = requireNotNull(entry.bitmap)
         if (source.width == subscriber.width && source.height == subscriber.height) {
+            releasePreparedOutput(subscriber)
             return createPrefixLease(entry)
         }
-        val output = obtainBitmap(subscriber.width, subscriber.height)
-        extraBitmapCount++
+        val preparedOutput = subscriber.preparedOutput
+        subscriber.preparedOutput = null
+        val output = preparedOutput ?: obtainBitmap(subscriber.width, subscriber.height)
+        if (preparedOutput == null) extraBitmapCount++
         val sizeKey = bitmapSizeKey(subscriber.width, subscriber.height)
         leasedOutputCounts[sizeKey] = (leasedOutputCounts[sizeKey] ?: 0) + 1
         updateReusableBitmapLimit()
@@ -1298,6 +1327,13 @@ internal class WindowPixelCopyCoordinator(
             active = false
             retireDeliveredOutput(output, sizeKey)
         }
+    }
+
+    private fun releasePreparedOutput(subscriber: PrefixSubscriber) {
+        val output = subscriber.preparedOutput ?: return
+        subscriber.preparedOutput = null
+        extraBitmapCount--
+        retireBitmap(output)
     }
 
     private fun retireDeliveredOutput(output: Bitmap, sizeKey: Long) {
@@ -1325,26 +1361,30 @@ internal class WindowPixelCopyCoordinator(
         entry.delivering = true
         val subscribers = entry.subscribers.toList()
         entry.subscribers.clear()
-        subscribers.forEach { subscriber ->
-            if (!closed && subscriber.active) {
-                subscriber.active = false
-                val lease = if (result == PixelCopy.SUCCESS) {
-                    createDeliveredPrefixLease(entry, subscriber)
-                } else {
-                    null
-                }
-                subscriber.onResult(
-                    if (result == PixelCopy.SUCCESS && lease == null) {
-                        PixelCopy.ERROR_UNKNOWN
+        try {
+            subscribers.forEach { subscriber ->
+                if (!closed && subscriber.active) {
+                    subscriber.active = false
+                    val lease = if (result == PixelCopy.SUCCESS) {
+                        createDeliveredPrefixLease(entry, subscriber)
                     } else {
-                        result
-                    },
-                    lease,
-                )
+                        null
+                    }
+                    subscriber.onResult(
+                        if (result == PixelCopy.SUCCESS && lease == null) {
+                            PixelCopy.ERROR_UNKNOWN
+                        } else {
+                            result
+                        },
+                        lease,
+                    )
+                }
+                subscriber.active = false
             }
-            subscriber.active = false
+        } finally {
+            subscribers.forEach(::releasePreparedOutput)
+            entry.delivering = false
         }
-        entry.delivering = false
     }
 
     private fun detachPrefixSubtree(entry: PrefixEntry) {
@@ -1721,7 +1761,10 @@ internal class WindowPixelCopyCoordinator(
         forgetPreparedPrefixes(entry)
         cancelRawDependencies(entry)
         retireOwnedRawBitmap(entry, recycle = true)
-        entry.subscribers.forEach { it.active = false }
+        entry.subscribers.forEach { subscriber ->
+            subscriber.active = false
+            releasePreparedOutput(subscriber)
+        }
         entry.subscribers.clear()
         entry.prefixPending = false
         entry.holdsEpoch = false
@@ -2092,6 +2135,7 @@ internal class WindowPixelCopyCoordinator(
         val onResult: (Int, WindowPixelCopyLease?) -> Unit,
     ) {
         var active = true
+        var preparedOutput: Bitmap? = null
     }
 
     private class WindowSurfacePlaneRenderer {

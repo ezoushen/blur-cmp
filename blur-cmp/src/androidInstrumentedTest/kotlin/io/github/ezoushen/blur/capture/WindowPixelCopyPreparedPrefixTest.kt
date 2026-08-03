@@ -373,6 +373,68 @@ class WindowPixelCopyPreparedPrefixTest {
     }
 
     @Test
+    fun smallerDeliveryMissDoesNotEvictReservedLargerDelivery() {
+        onMain {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val copier = RecordingWindowPixelCopier()
+            val batchScheduler = ManualPreparedPrefixBatchScheduler()
+            val allocatedSizes = mutableListOf<Pair<Int, Int>>()
+            val coordinator = WindowPixelCopyCoordinator(
+                pixelCopier = copier,
+                epochProvider = { 1L },
+                bitmapFactory = { width, height ->
+                    allocatedSizes += width to height
+                    Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                },
+                preparedPrefixBatchPoster = batchScheduler::post,
+            )
+            coordinator.setReusableBitmapLimit(3)
+            repeat(2) {
+                coordinator.retireBitmapForTest(
+                    Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888),
+                )
+            }
+            coordinator.retireBitmapForTest(
+                Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888),
+            )
+            val source = BackdropCaptureSource(
+                view = CountingLocationView(context).apply { layout(0, 0, 32, 32) },
+                window = createWindow(context),
+                pixelCopyCoordinator = coordinator,
+            )
+            val prefixes = List(3) { BackdropCapturePrefix(parent = null, source = source) }
+            val frames = mutableListOf<WindowPrefixFrame>()
+            val epochs = List(3) { coordinator.beginEpoch() }
+
+            listOf(4, 8, 16).forEachIndexed { index, size ->
+                epochs[index].requestPrefix(
+                    prefix = prefixes[index],
+                    viewport = BackdropCaptureViewport(
+                        screenRect = Rect(0, 0, 32, 32),
+                        outputWidth = size,
+                        outputHeight = size,
+                    ),
+                ) { result, frame ->
+                    assertEquals(PixelCopy.SUCCESS, result)
+                    frames += requireNotNull(frame)
+                }
+            }
+            batchScheduler.flush()
+            copier.completeAll(PixelCopy.SUCCESS)
+
+            assertEquals(
+                listOf(4 to 4),
+                allocatedSizes,
+                "A smaller delivery miss must not evict the reserved 8x8 output",
+            )
+
+            epochs.forEach { it.close() }
+            frames.forEach(WindowPrefixFrame::close)
+            coordinator.close()
+        }
+    }
+
+    @Test
     fun heterogeneousPoolMissesStayLinearAndMemoryBounded() {
         onMain {
             val bitmapCount = 16
