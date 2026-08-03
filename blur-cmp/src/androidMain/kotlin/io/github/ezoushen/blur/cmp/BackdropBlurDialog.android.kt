@@ -32,7 +32,6 @@ import androidx.core.view.doOnPreDraw
 import io.github.ezoushen.blur.capture.BackdropCapturePrefix
 import io.github.ezoushen.blur.capture.BackdropCaptureSource
 import io.github.ezoushen.blur.capture.WindowPixelCopyCoordinator
-import java.util.WeakHashMap
 
 internal class AndroidBackdropLayer {
     var captureView: View? by mutableStateOf(null)
@@ -82,55 +81,6 @@ internal data class AndroidBackdropStack(
 internal val LocalAndroidBackdropStack =
     staticCompositionLocalOf<AndroidBackdropStack?> { null }
 
-private class BackdropWindowEntry(
-    val layer: AndroidBackdropLayer,
-) {
-    var root: View? by mutableStateOf(null)
-    var window: Window? by mutableStateOf(null)
-    var pixelCopyCoordinator: WindowPixelCopyCoordinator? by mutableStateOf(null)
-    var previous: BackdropWindowEntry? by mutableStateOf(null)
-    var capturePrefix: BackdropCapturePrefix? by mutableStateOf(null)
-    var readiness: AndroidBackdropReadiness? by mutableStateOf(null)
-}
-
-private class BackdropWindowGroup {
-    val entries = mutableListOf<BackdropWindowEntry>()
-    val pixelCopyCoordinator = WindowPixelCopyCoordinator()
-}
-
-private object BackdropWindowRegistry {
-    private val entriesByBaseRoot =
-        WeakHashMap<View, BackdropWindowGroup>()
-
-    fun register(baseRoot: View, entry: BackdropWindowEntry) {
-        val group = entriesByBaseRoot.getOrPut(baseRoot, ::BackdropWindowGroup)
-        entry.previous = group.entries.lastOrNull()
-        group.entries.add(entry)
-        entry.pixelCopyCoordinator = group.pixelCopyCoordinator
-    }
-
-    fun unregister(baseRoot: View, entry: BackdropWindowEntry) {
-        entriesByBaseRoot[baseRoot]?.let { group ->
-            val index = group.entries.indexOf(entry)
-            if (index >= 0) {
-                group.pixelCopyCoordinator.invalidatePreparedTopology()
-                group.entries.getOrNull(index + 1)?.previous = entry.previous
-                group.entries.removeAt(index)
-            }
-            entry.previous = null
-            entry.root = null
-            entry.window = null
-            entry.capturePrefix = null
-            entry.readiness = null
-            entry.pixelCopyCoordinator = null
-            if (group.entries.isEmpty()) {
-                entriesByBaseRoot.remove(baseRoot)
-                group.pixelCopyCoordinator.close()
-            }
-        }
-    }
-}
-
 /**
  * Android implementation of [BackdropBlurDialog].
  *
@@ -147,15 +97,6 @@ actual fun BackdropBlurDialog(
     val lowerRoot = LocalView.current.rootView
     val activityWindow = LocalContext.current.findActivity()?.window
     val layer = remember { AndroidBackdropLayer() }
-    val registryEntry = remember { BackdropWindowEntry(layer) }
-    if (parentStack == null) {
-        DisposableEffect(lowerRoot, registryEntry) {
-            BackdropWindowRegistry.register(lowerRoot, registryEntry)
-            onDispose {
-                BackdropWindowRegistry.unregister(lowerRoot, registryEntry)
-            }
-        }
-    }
 
     Dialog(
         onDismissRequest = onDismissRequest,
@@ -167,7 +108,6 @@ actual fun BackdropBlurDialog(
         ),
     ) {
         BackHandler(onBack = onDismissRequest)
-        RegisterBackdropCaptureSource()
         val view = LocalView.current
         DisposableEffect(view.rootView, layer) {
             layer.contentReady = false
@@ -179,10 +119,13 @@ actual fun BackdropBlurDialog(
                 layer.contentReady = false
             }
         }
-        val previousEntry = registryEntry.previous.takeIf { parentStack == null }
         val currentWindow = view.findDialogWindow()
+        val registeredCapture = registeredBackdropCapture(
+            activity = LocalContext.current.findActivity(),
+            currentView = view,
+        )
         val pixelCopyCoordinator = parentStack?.pixelCopyCoordinator
-            ?: registryEntry.pixelCopyCoordinator
+            ?: registeredBackdropCoordinator(LocalContext.current.findActivity())
         val activityPrefix = remember(lowerRoot, activityWindow, pixelCopyCoordinator) {
             BackdropCapturePrefix(
                 parent = null,
@@ -209,15 +152,13 @@ actual fun BackdropBlurDialog(
                     ),
                 )
             }
-        } else {
-            previousEntry?.capturePrefix ?: activityPrefix
-        }
+        } else registeredCapture?.capturePrefix ?: activityPrefix
         DisposableEffect(pixelCopyCoordinator, capturePrefix) {
             onDispose {
                 pixelCopyCoordinator?.invalidatePreparedTopology()
             }
         }
-        val lowerReadiness = parentStack?.readiness ?: previousEntry?.readiness
+        val lowerReadiness = parentStack?.readiness ?: registeredCapture?.lowerReadiness
         val readiness = remember(lowerReadiness, layer) {
             AndroidBackdropReadiness(lowerReadiness, layer)
         }
@@ -231,27 +172,8 @@ actual fun BackdropBlurDialog(
             readiness = readiness,
             currentLayer = layer,
         )
-        val registryCapturePrefix = if (parentStack == null) {
-            remember(capturePrefix, view.rootView, currentWindow, pixelCopyCoordinator) {
-                BackdropCapturePrefix(
-                    parent = capturePrefix,
-                    source = BackdropCaptureSource(
-                        view = view.rootView,
-                        window = currentWindow,
-                        pixelCopyCoordinator = pixelCopyCoordinator,
-                    ),
-                )
-            }
-        } else {
-            null
-        }
+        RegisterBackdropCaptureSource(readiness)
         SideEffect {
-            if (parentStack == null) {
-                registryEntry.root = view.rootView
-                registryEntry.window = currentWindow
-                registryEntry.capturePrefix = registryCapturePrefix
-                registryEntry.readiness = readiness
-            }
             val window = currentWindow ?: return@SideEffect
             window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
             window.setWindowAnimations(0)

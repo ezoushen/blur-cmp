@@ -76,18 +76,7 @@ actual fun BlurOverlayHost(
         activity = activity,
         currentView = currentView,
     )
-    val automaticCaptureSources = remember(activity, registeredCapture?.sources) {
-        if (registeredCapture == null || registeredCapture.sources.isEmpty() || activity == null) {
-            emptyList()
-        } else {
-            buildList {
-                add(BackdropCaptureSource(activity.window.decorView, activity.window))
-                registeredCapture.sources.forEach {
-                    add(BackdropCaptureSource(it.view, it.window))
-                }
-            }
-        }
-    }
+    val automaticCaptureSources = registeredCapture?.sources.orEmpty()
     val rememberedBackdropLayer = remember { AndroidBackdropLayer() }
     val backdropLayer = backdropStack?.currentLayer ?: rememberedBackdropLayer
     DisposableEffect(backdropLayer) {
@@ -97,9 +86,12 @@ actual fun BlurOverlayHost(
         }
     }
     val stackedCapturePrefix = backdropStack?.capturePrefix
-    val lowerReadiness = backdropStack?.lowerReadiness
+    val lowerReadiness = backdropStack?.lowerReadiness ?: registeredCapture?.lowerReadiness
     val lowerLayersReady = lowerReadiness?.isReady ?: true
-    val explicitCaptureSources = (injectedCaptureSources.ifEmpty { automaticCaptureSources })
+    val explicitCaptureSources = injectedCaptureSources
+        .ifEmpty {
+            automaticCaptureSources.takeIf { stackedCapturePrefix == null }.orEmpty()
+        }
         .takeIf { it.isNotEmpty() }
     val capturePrefix = stackedCapturePrefix.takeIf { explicitCaptureSources == null }
 

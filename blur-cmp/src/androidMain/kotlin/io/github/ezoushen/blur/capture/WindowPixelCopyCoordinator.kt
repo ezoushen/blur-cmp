@@ -276,6 +276,7 @@ internal class WindowPixelCopyCoordinator(
         }
         updateReusableBitmapLimit()
         try {
+            bitmap.eraseColor(android.graphics.Color.TRANSPARENT)
             pixelCopier.request(window, Rect(sourceRect), bitmap) { result ->
                 complete(entry, result)
             }
@@ -1065,6 +1066,7 @@ internal class WindowPixelCopyCoordinator(
         extraBitmapCount++
         updateReusableBitmapLimit()
         try {
+            bitmap.eraseColor(android.graphics.Color.TRANSPARENT)
             surfacePixelCopier.request(
                 layer.surface,
                 bitmap,

@@ -1092,6 +1092,52 @@ class StackedBlurOverlayTest {
     }
 
     @Test
+    fun registeredBackdropDialogsKeepPreparedPrefixCapture() {
+        val upperRoot = AtomicReference<View>()
+        val upperState = AtomicReference<BlurOverlayState>()
+        launchEmptyActivity().use { scenario ->
+            scenario.onActivity { activity ->
+                activity.setContent {
+                    Box(Modifier.fillMaxSize().background(Color.Blue))
+                    BackdropBlurDialog(onDismissRequest = {}) {
+                        BlurOverlay(
+                            state = rememberBlurOverlayState(
+                                BlurOverlayConfig(radius = 12f, isLive = false),
+                            ),
+                            modifier = Modifier.fillMaxSize(),
+                        ) {}
+                    }
+                    BackdropBlurDialog(onDismissRequest = {}) {
+                        val state = rememberBlurOverlayState(
+                            BlurOverlayConfig(radius = 12f, isLive = false),
+                        )
+                        val root = LocalView.current.rootView
+                        SideEffect {
+                            upperRoot.set(root)
+                            upperState.set(state)
+                        }
+                        BlurOverlay(state = state, modifier = Modifier.fillMaxSize()) {}
+                    }
+                }
+            }
+
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                upperState.get()?.isReady == true
+            }
+            val blurView = requireNotNull(findBlurCaptureView(requireNotNull(upperRoot.get())))
+            val coordinators = capturePrefixCoordinators(blurView)
+            val coordinator = coordinators.firstOrNull()
+            assertTrue(
+                captureSources(blurView) == null && coordinators.size == 2 && coordinator != null &&
+                    coordinators.all { it === coordinator },
+                "N-layer dialogs must use one prepared prefix and shared PixelCopy coordinator; " +
+                    "sources=${captureSources(blurView)?.size}, prefix=${coordinators.size}, " +
+                    "coordinators=${coordinators.map { System.identityHashCode(it) }}",
+            )
+        }
+    }
+
+    @Test
     fun registeredForeignDialogsAreCapturedInLayerOrder() {
         val showUpper = mutableStateOf(false)
         launchEmptyActivity().use { scenario ->
@@ -3807,6 +3853,39 @@ class StackedBlurOverlayTest {
             field.get(capture) as? List<*>
         }
     }
+
+    private fun capturePrefixCoordinators(blurView: View): List<Any?> {
+        val controller = blurView.javaClass.getDeclaredField("blurController").let { field ->
+            field.isAccessible = true
+            requireNotNull(field.get(blurView))
+        }
+        val capture = controller.javaClass.getDeclaredField("capture").let { field ->
+            field.isAccessible = true
+            requireNotNull(field.get(controller))
+        }
+        var prefix = capture.javaClass.getDeclaredField("capturePrefix").let { field ->
+            field.isAccessible = true
+            field.get(capture)
+        }
+        return buildList {
+            while (prefix != null) {
+                val current = requireNotNull(prefix)
+                val source = current.javaClass.getDeclaredField("source").let { field ->
+                    field.isAccessible = true
+                    requireNotNull(field.get(current))
+                }
+                add(source.javaClass.getDeclaredField("pixelCopyCoordinator").let { field ->
+                    field.isAccessible = true
+                    field.get(source)
+                })
+                prefix = current.javaClass.getDeclaredField("parent").let { field ->
+                    field.isAccessible = true
+                    field.get(current)
+                }
+            }
+        }
+    }
+
 }
 
 private enum class AndroidReadinessMode {

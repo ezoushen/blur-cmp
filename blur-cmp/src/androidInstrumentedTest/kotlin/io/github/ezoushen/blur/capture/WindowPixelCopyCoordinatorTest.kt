@@ -22,6 +22,35 @@ import org.junit.runner.RunWith
 class WindowPixelCopyCoordinatorTest {
 
     @Test
+    fun clearsPixelCopyDestinationBeforeCapture() {
+        val window = createWindows(1).single()
+        val copier = FakeWindowPixelCopier { _, destination ->
+            assertEquals(Color.TRANSPARENT, destination.getPixel(0, 0))
+            destination.eraseColor(Color.RED)
+        }
+        val coordinator = WindowPixelCopyCoordinator(
+            pixelCopier = copier,
+            bitmapFactory = { width, height ->
+                Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply {
+                    eraseColor(Color.CYAN)
+                }
+            },
+        )
+
+        onMain {
+            coordinator.beginEpoch().use { epoch ->
+                epoch.requestPrefix(
+                    planes = listOf(WindowPixelCopyPlane(window, Rect(0, 0, 8, 8))),
+                    width = 8,
+                    height = 8,
+                ) { _, lease -> lease?.close() }
+                copier.completeAll(PixelCopy.SUCCESS)
+            }
+            coordinator.close()
+        }
+    }
+
+    @Test
     fun adversarialPrefixesKeepLogicalCaptureGraphLinear() {
         val windows = createWindows(8)
         val copier = FakeWindowPixelCopier()
