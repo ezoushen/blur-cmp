@@ -824,7 +824,18 @@ class StackedBlurOverlayTest {
                 state.get()?.isReady == true
             }
             composeRule.waitForIdle()
-            val initial = takeScreenshot()
+            val revealed = takeScreenshot()
+            val revealedBackground = sample(revealed, xFraction = 0.8f, yFraction = 0.85f)
+            revealed.recycle()
+            assertTrue(
+                AndroidColor.blue(revealedBackground) > AndroidColor.red(revealedBackground) &&
+                    AndroidColor.blue(revealedBackground) > AndroidColor.green(revealedBackground),
+                "Readiness must not reveal an uninitialized black surface; " +
+                    "sampled #${revealedBackground.toUInt().toString(16)}",
+            )
+            val initial = awaitScreenshot {
+                isSoftenedEdge(it, yDp = 200)
+            }
             assertSoftenedEdge(
                 initial,
                 yDp = 200,
