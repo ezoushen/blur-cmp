@@ -67,6 +67,8 @@ class SurfaceTextureCapture {
      */
     fun init(glTextureId: Int, width: Int, height: Int) {
         if (textureId == glTextureId && surfaceTexture != null) {
+            // Radius animation changes processing dimensions every frame. Keep the
+            // producer stable so its queued frame can complete overlay readiness.
             return
         }
 
