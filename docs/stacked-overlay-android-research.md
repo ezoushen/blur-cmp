@@ -133,19 +133,23 @@ bounds and resolution, then runs that layer's custom Kawase/OpenGL blur. This
 preserves native window ordering for `SurfaceView` content while allowing each
 layer to own its `isLive` and one-shot update policy.
 
-Layers in the same stack share raw `Window` PixelCopy results and build one
-canonical cumulative prefix per source window. For N live layers this requires
-N physical window copies and N raw-plane additions per frame instead of
-N(N+1)/2. A consumer with different output dimensions receives one resize of
-the nearest cumulative prefix. Each layer still performs its own blur pass
+Layers in the same stack with the same capture bounds share raw `Window`
+PixelCopy results and build one canonical cumulative prefix per source window.
+For N live layers with common bounds this requires N physical window copies and
+N raw-plane additions per frame instead of N(N+1)/2. A consumer with different
+output dimensions receives one resize of the nearest cumulative prefix. Layers
+with different capture bounds use separate batches to preserve exact sampling
+without allocating a full-resolution union buffer. Each layer still performs
+its own blur pass
 because its bounds, liveness, radius, scrim, and transition can differ. Capture
 and prefix bitmaps are reused across frames and are released with the stack.
 
 This architecture preserves the device-independent custom blur result and does
 not depend on a hidden compositor capture API. With all N layers live, N blur
 passes remain unavoidable; capture and prefix composition scale linearly with
-stack depth, and performance must still be verified at the maximum supported
-depth and resolution.
+stack depth when capture bounds match. Different bounds remain supported but
+can require repeated source copies, so performance must still be verified at
+the maximum supported depth, bounds, and resolution.
 
 ## Recommended verification contract
 
