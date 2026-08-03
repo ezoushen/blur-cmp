@@ -2,7 +2,11 @@
 
 ## [Unreleased]
 
+## [0.10.2] — 2026-08-04
+
 - feat: register custom dialog windows for automatic stacked backdrop capture
+- fix(android): preserve readiness when lower registered dialogs are removed
+- fix(android): clear pooled PixelCopy destinations before capture
 
 ## [0.10.1] — 2026-08-01
 
