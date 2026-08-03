@@ -77,7 +77,7 @@ actual fun BlurOverlayHost(
         currentView = currentView,
     )
     val automaticCaptureSources = remember(activity, registeredCapture?.sources) {
-        if (registeredCapture == null || activity == null) {
+        if (registeredCapture == null || registeredCapture.sources.isEmpty() || activity == null) {
             emptyList()
         } else {
             buildList {
@@ -96,11 +96,12 @@ actual fun BlurOverlayHost(
             backdropLayer.release()
         }
     }
-    val capturePrefix = backdropStack?.capturePrefix
+    val stackedCapturePrefix = backdropStack?.capturePrefix
     val lowerReadiness = backdropStack?.lowerReadiness
     val lowerLayersReady = lowerReadiness?.isReady ?: true
     val explicitCaptureSources = (injectedCaptureSources.ifEmpty { automaticCaptureSources })
         .takeIf { it.isNotEmpty() }
+    val capturePrefix = stackedCapturePrefix.takeIf { explicitCaptureSources == null }
 
     Box(modifier = modifier) {
         background()

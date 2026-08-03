@@ -61,10 +61,9 @@ private object RegisteredBackdropCaptureSources {
 @Composable
 actual fun RegisterBackdropCaptureSource() {
     val activity = LocalContext.current.findActivity() ?: return
-    val root = LocalView.current.rootView
-    val window = (root.parent as? DialogWindowProvider)?.window
-        ?: (LocalView.current.parent as? DialogWindowProvider)?.window
-        ?: return
+    val view = LocalView.current
+    val root = view.rootView
+    val window = view.findDialogWindow() ?: return
 
     DisposableEffect(activity, root, window) {
         val source = AndroidBlurOverlayCaptureSource(root, window)
@@ -84,10 +83,14 @@ internal fun registeredBackdropCapture(
     currentView: View,
 ): RegisteredBackdropCapture? {
     activity ?: return null
-    val currentWindow = (currentView.parent as? DialogWindowProvider)?.window
+    val currentWindow = currentView.findDialogWindow()
     if (currentWindow == null && currentView.rootView === activity.window.decorView) return null
     val registered = RegisteredBackdropCaptureSources.below(activity, currentWindow)
     return RegisteredBackdropCapture(
         sources = registered,
     )
 }
+
+internal fun View.findDialogWindow(): Window? =
+    (rootView.parent as? DialogWindowProvider)?.window
+        ?: (parent as? DialogWindowProvider)?.window

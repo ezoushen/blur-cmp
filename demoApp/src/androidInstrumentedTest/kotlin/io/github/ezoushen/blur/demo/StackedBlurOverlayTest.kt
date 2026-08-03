@@ -1000,6 +1000,98 @@ class StackedBlurOverlayTest {
     }
 
     @Test
+    fun registeredForeignDialogIsCapturedByBackdropBlurDialog() {
+        val showUpper = mutableStateOf(false)
+        launchEmptyActivity().use { scenario ->
+            scenario.onActivity { activity ->
+                activity.setContent {
+                    Box(Modifier.fillMaxSize().background(Color.Blue))
+                    Dialog(
+                        onDismissRequest = {},
+                        properties = DialogProperties(
+                            usePlatformDefaultWidth = false,
+                            decorFitsSystemWindows = false,
+                        ),
+                    ) {
+                        ConfigureTransparentDialogWindow()
+                        RegisterBackdropCaptureSource()
+                        Box(Modifier.fillMaxSize()) {
+                            EdgeMarker(
+                                Modifier
+                                    .offset(x = 32.dp, y = 120.dp)
+                                    .size(160.dp),
+                            )
+                        }
+                    }
+                    if (showUpper.value) {
+                        BackdropBlurDialog(onDismissRequest = {}) {
+                            BlurOverlay(
+                                state = rememberBlurOverlayState(
+                                    BlurOverlayConfig(radius = 12f, isLive = false),
+                                ),
+                                modifier = Modifier.fillMaxSize(),
+                            ) {}
+                        }
+                    }
+                }
+            }
+
+            awaitScreenshot { centerEdgeContrast(it, yDp = 200) > 100 }.recycle()
+            composeRule.runOnIdle { showUpper.value = true }
+            assertSoftenedEdge(
+                awaitScreenshot { isSoftenedEdge(it, yDp = 200) },
+                yDp = 200,
+                context = "registered dialog captured by BackdropBlurDialog",
+            )
+        }
+    }
+
+    @Test
+    fun backdropBlurDialogIsCapturedByRegisteredForeignDialog() {
+        val showUpper = mutableStateOf(false)
+        launchEmptyActivity().use { scenario ->
+            scenario.onActivity { activity ->
+                activity.setContent {
+                    Box(Modifier.fillMaxSize().background(Color.Blue))
+                    BackdropBlurDialog(onDismissRequest = {}) {
+                        EdgeMarker(
+                            Modifier
+                                .offset(x = 32.dp, y = 120.dp)
+                                .size(160.dp),
+                        )
+                    }
+                    if (showUpper.value) {
+                        Dialog(
+                            onDismissRequest = {},
+                            properties = DialogProperties(
+                                usePlatformDefaultWidth = false,
+                                decorFitsSystemWindows = false,
+                            ),
+                        ) {
+                            ConfigureTransparentDialogWindow()
+                            RegisterBackdropCaptureSource()
+                            BlurOverlay(
+                                state = rememberBlurOverlayState(
+                                    BlurOverlayConfig(radius = 12f, isLive = false),
+                                ),
+                                modifier = Modifier.fillMaxSize(),
+                            ) {}
+                        }
+                    }
+                }
+            }
+
+            awaitScreenshot { centerEdgeContrast(it, yDp = 200) > 100 }.recycle()
+            composeRule.runOnIdle { showUpper.value = true }
+            assertSoftenedEdge(
+                awaitScreenshot { isSoftenedEdge(it, yDp = 200) },
+                yDp = 200,
+                context = "BackdropBlurDialog captured by registered dialog",
+            )
+        }
+    }
+
+    @Test
     fun registeredForeignDialogsAreCapturedInLayerOrder() {
         val showUpper = mutableStateOf(false)
         launchEmptyActivity().use { scenario ->

@@ -27,7 +27,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.doOnPreDraw
 import io.github.ezoushen.blur.capture.BackdropCapturePrefix
@@ -168,6 +167,7 @@ actual fun BackdropBlurDialog(
         ),
     ) {
         BackHandler(onBack = onDismissRequest)
+        RegisterBackdropCaptureSource()
         val view = LocalView.current
         DisposableEffect(view.rootView, layer) {
             layer.contentReady = false
@@ -180,7 +180,7 @@ actual fun BackdropBlurDialog(
             }
         }
         val previousEntry = registryEntry.previous.takeIf { parentStack == null }
-        val currentWindow = (view.parent as? DialogWindowProvider)?.window
+        val currentWindow = view.findDialogWindow()
         val pixelCopyCoordinator = parentStack?.pixelCopyCoordinator
             ?: registryEntry.pixelCopyCoordinator
         val activityPrefix = remember(lowerRoot, activityWindow, pixelCopyCoordinator) {
