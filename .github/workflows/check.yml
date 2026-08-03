@@ -59,6 +59,7 @@ jobs:
           api-level: 35
           target: default
           arch: x86_64
+          profile: pixel_7
           emulator-options: -no-window -gpu swangle -no-snapshot -noaudio -no-boot-anim
           script: ./gradlew :blur-cmp:connectedDebugAndroidTest :demoApp:connectedDebugAndroidTest --no-configuration-cache
 
