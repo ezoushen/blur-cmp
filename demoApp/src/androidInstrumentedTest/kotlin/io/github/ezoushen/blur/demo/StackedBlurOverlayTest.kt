@@ -2,11 +2,9 @@ package io.github.ezoushen.blur.demo
 
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Color as AndroidColor
 import android.graphics.SurfaceTexture
 import android.graphics.drawable.ColorDrawable
-import android.os.ParcelFileDescriptor
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -825,6 +823,7 @@ class StackedBlurOverlayTest {
             composeRule.waitUntil(timeoutMillis = 10_000) {
                 state.get()?.isReady == true
             }
+            composeRule.waitForIdle()
             val initial = takeScreenshot()
             assertSoftenedEdge(
                 initial,
@@ -836,7 +835,8 @@ class StackedBlurOverlayTest {
 
             scenario.onActivity { state.get().setRadius(20f) }
             val changed = awaitScreenshot {
-                centerEdgeContrast(it, yDp = 200) < initialContrast * 0.75f
+                isSoftenedEdge(it, yDp = 200) &&
+                    centerEdgeContrast(it, yDp = 200) < initialContrast * 0.75f
             }
             assertSoftenedEdge(changed, yDp = 200, context = "Changed-radius frame")
             val changedCenter = edgeCenterDp(changed, yDp = 200)
@@ -3282,7 +3282,9 @@ class StackedBlurOverlayTest {
         var pixel = 0
         try {
             composeRule.waitUntil(timeoutMillis = 10_000) {
-                pixel = sample(takeScreenshot(), xFraction, yFraction)
+                val screenshot = takeScreenshot()
+                pixel = sample(screenshot, xFraction, yFraction)
+                screenshot.recycle()
                 predicate(pixel)
             }
         } catch (error: ComposeTimeoutException) {
@@ -3297,23 +3299,20 @@ class StackedBlurOverlayTest {
     private fun awaitScreenshot(predicate: (Bitmap) -> Boolean): Bitmap {
         var screenshot: Bitmap? = null
         composeRule.waitUntil(timeoutMillis = 10_000) {
-            screenshot = takeScreenshot()
-            predicate(requireNotNull(screenshot))
+            val candidate = takeScreenshot()
+            if (predicate(candidate)) {
+                screenshot = candidate
+                true
+            } else {
+                candidate.recycle()
+                false
+            }
         }
         return requireNotNull(screenshot)
     }
 
     private fun takeScreenshot(): Bitmap {
-        val uiAutomation = InstrumentationRegistry.getInstrumentation().uiAutomation
-        val path = "/sdcard/stacked-blur-test.png"
-        uiAutomation.executeShellCommand("screencap -p $path").use { descriptor ->
-            ParcelFileDescriptor.AutoCloseInputStream(descriptor).readBytes()
-        }
-        return uiAutomation.executeShellCommand("cat $path").use { descriptor ->
-            ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { stream ->
-                requireNotNull(BitmapFactory.decodeStream(stream))
-            }
-        }
+        return requireNotNull(InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot())
     }
 
     private fun findBlurCaptureView(view: View): View? {
