@@ -34,11 +34,17 @@ jobs:
         run: ./gradlew :demoApp:compileDebugKotlinAndroid :demoApp:compileDebugAndroidTestKotlinAndroid --no-configuration-cache
 
   android-instrumentation:
-    runs-on: macos-15-intel
-    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Enable KVM group permissions
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
 
       - uses: actions/setup-java@v4
         with:
@@ -51,7 +57,7 @@ jobs:
         uses: reactivecircus/android-emulator-runner@v2.38.0
         with:
           api-level: 35
-          target: google_apis
+          target: default
           arch: x86_64
           script: ./gradlew :blur-cmp:connectedDebugAndroidTest :demoApp:connectedDebugAndroidTest --no-configuration-cache
 
