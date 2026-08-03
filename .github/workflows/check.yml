@@ -24,8 +24,44 @@ jobs:
       - name: Compile blur-cmp (Android)
         run: ./gradlew :blur-cmp:compileReleaseKotlinAndroid --no-configuration-cache
 
-      - name: Compile blur-cmp (iOS)
-        run: ./gradlew :blur-cmp:compileKotlinIosArm64 :blur-cmp:compileKotlinIosSimulatorArm64 --no-configuration-cache
+      - name: Test blur-cmp (Android)
+        run: ./gradlew :blur-cmp:testDebugUnitTest --no-configuration-cache
+
+      - name: Check blur-cmp (iOS)
+        run: ./gradlew :blur-cmp:compileKotlinIosArm64 :blur-cmp:iosSimulatorArm64Test --no-configuration-cache
 
       - name: Compile demo app (Android)
-        run: ./gradlew :demoApp:compileDebugKotlinAndroid --no-configuration-cache
+        run: ./gradlew :demoApp:compileDebugKotlinAndroid :demoApp:compileDebugAndroidTestKotlinAndroid --no-configuration-cache
+
+  android-instrumentation:
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Test demo app (Android)
+        uses: reactivecircus/android-emulator-runner@v2.38.0
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          script: ./gradlew :blur-cmp:connectedDebugAndroidTest :demoApp:connectedDebugAndroidTest --no-configuration-cache
+
+      - name: Upload Android test reports
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: android-instrumentation-results
+          path: |
+            blur-cmp/build/reports/androidTests/connected/debug/
+            blur-cmp/build/outputs/androidTest-results/connected/debug/
+            demoApp/build/reports/androidTests/connected/debug/
+            demoApp/build/outputs/androidTest-results/connected/debug/
