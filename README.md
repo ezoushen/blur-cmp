@@ -265,7 +265,17 @@ composites every lower window from the activity upward, including each lower
 layer's blur and sharp UI. Each layer keeps its own live/frozen update policy.
 
 Android callers that own their overlay windows can provide the ordered capture
-stack from an Android source set:
+stack automatically by registering each custom dialog or sheet from common code:
+
+```kotlin
+Dialog(onDismissRequest = onDismissRequest) {
+    RegisterBackdropCaptureSource()
+    SheetContent()
+}
+```
+
+`BackdropBlurDialog` already registers its window. Manual source injection remains
+available from an Android source set for hosts that cannot register from Compose:
 
 ```kotlin
 CompositionLocalProvider(

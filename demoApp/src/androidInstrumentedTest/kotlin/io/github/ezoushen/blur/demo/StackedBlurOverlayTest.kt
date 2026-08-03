@@ -11,6 +11,7 @@ import android.view.SurfaceView
 import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
@@ -25,14 +26,22 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.junit4.v2.createEmptyComposeRule
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.savedstate.SavedStateRegistryOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import io.github.ezoushen.blur.BlurConfig
 import io.github.ezoushen.blur.BlurController
 import io.github.ezoushen.blur.BlurGradient
@@ -51,6 +60,7 @@ import io.github.ezoushen.blur.cmp.BlurOverlayPlatformContext
 import io.github.ezoushen.blur.cmp.BlurOverlayState
 import io.github.ezoushen.blur.cmp.BlurGradientType
 import io.github.ezoushen.blur.cmp.LocalBlurOverlayPlatformContext
+import io.github.ezoushen.blur.cmp.RegisterBackdropCaptureSource
 import io.github.ezoushen.blur.cmp.rememberBlurOverlayState
 import io.github.ezoushen.blur.cmp.withTint
 import io.github.ezoushen.blur.view.BlurView
@@ -932,6 +942,343 @@ class StackedBlurOverlayTest {
                 yDp = 200,
                 context = "plain dialog marker captured by blur above it",
             )
+        }
+    }
+
+    @Test
+    fun registeredForeignDialogLayerIsCapturedByHigherBlurOverlay() {
+        val showUpper = mutableStateOf(true)
+        launchEmptyActivity().use { scenario ->
+            scenario.onActivity { activity ->
+                activity.setContent {
+                    Box(Modifier.fillMaxSize().background(Color.Blue))
+
+                    Dialog(
+                        onDismissRequest = {},
+                        properties = DialogProperties(
+                            usePlatformDefaultWidth = false,
+                            decorFitsSystemWindows = false,
+                        ),
+                    ) {
+                        ConfigureTransparentDialogWindow()
+                        RegisterBackdropCaptureSource()
+                        Box(Modifier.fillMaxSize()) {
+                            EdgeMarker(
+                                Modifier
+                                    .offset(x = 32.dp, y = 120.dp)
+                                    .size(160.dp),
+                            )
+                            if (showUpper.value) {
+                                Dialog(
+                                    onDismissRequest = {},
+                                    properties = DialogProperties(
+                                        usePlatformDefaultWidth = false,
+                                        decorFitsSystemWindows = false,
+                                    ),
+                                ) {
+                                    ConfigureTransparentDialogWindow()
+                                    RegisterBackdropCaptureSource()
+                                    BlurOverlay(
+                                        state = rememberBlurOverlayState(
+                                            BlurOverlayConfig(radius = 12f, isLive = false),
+                                        ),
+                                        modifier = Modifier.fillMaxSize(),
+                                    ) {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            assertSoftenedEdge(
+                awaitScreenshot { isSoftenedEdge(it, yDp = 200) },
+                yDp = 200,
+                context = "registered foreign dialog marker captured by higher blur",
+            )
+        }
+    }
+
+    @Test
+    fun registeredForeignDialogsAreCapturedInLayerOrder() {
+        val showUpper = mutableStateOf(false)
+        launchEmptyActivity().use { scenario ->
+            scenario.onActivity { activity ->
+                activity.setContent {
+                    Box(Modifier.fillMaxSize().background(Color.Blue))
+                    Dialog(
+                        onDismissRequest = {},
+                        properties = DialogProperties(
+                            usePlatformDefaultWidth = false,
+                            decorFitsSystemWindows = false,
+                        ),
+                    ) {
+                        ConfigureTransparentDialogWindow()
+                        RegisterBackdropCaptureSource()
+                        Box(Modifier.fillMaxSize()) {
+                            EdgeMarker(
+                                Modifier
+                                    .offset(x = 32.dp, y = 120.dp)
+                                    .size(160.dp),
+                            )
+                            EdgeMarker(
+                                Modifier
+                                    .offset(x = 32.dp, y = 520.dp)
+                                    .size(160.dp),
+                            )
+                            Dialog(
+                                onDismissRequest = {},
+                                properties = DialogProperties(
+                                    usePlatformDefaultWidth = false,
+                                    decorFitsSystemWindows = false,
+                                ),
+                            ) {
+                                ConfigureTransparentDialogWindow()
+                                RegisterBackdropCaptureSource()
+                                Box(Modifier.fillMaxSize()) {
+                                    Box(
+                                        Modifier
+                                            .offset(x = 32.dp, y = 120.dp)
+                                            .size(160.dp)
+                                            .background(Color.Blue),
+                                    )
+                                    EdgeMarker(
+                                        Modifier
+                                            .offset(x = 32.dp, y = 320.dp)
+                                            .size(160.dp),
+                                    )
+                                    if (showUpper.value) {
+                                        Dialog(
+                                            onDismissRequest = {},
+                                            properties = DialogProperties(
+                                                usePlatformDefaultWidth = false,
+                                                decorFitsSystemWindows = false,
+                                            ),
+                                        ) {
+                                            ConfigureTransparentDialogWindow()
+                                            BlurOverlay(
+                                                state = rememberBlurOverlayState(
+                                                    BlurOverlayConfig(
+                                                        radius = 12f,
+                                                        isLive = false,
+                                                    ),
+                                                ),
+                                                modifier = Modifier.fillMaxSize(),
+                                            ) {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            awaitScreenshot {
+                centerEdgeContrast(it, yDp = 200) < 10 &&
+                    centerEdgeContrast(it, yDp = 400) > 100 &&
+                    centerEdgeContrast(it, yDp = 600) > 100
+            }.recycle()
+            composeRule.runOnIdle { showUpper.value = true }
+            val stacked = awaitScreenshot {
+                centerEdgeContrast(it, yDp = 200) < 10 &&
+                    isSoftenedEdge(it, yDp = 400) &&
+                    isSoftenedEdge(it, yDp = 600)
+            }
+            assertSoftenedEdge(stacked, yDp = 400, context = "middle registered layer")
+            assertSoftenedEdge(stacked, yDp = 600, context = "lower registered layer")
+            stacked.recycle()
+        }
+    }
+
+    @Test
+    fun disposedForeignDialogIsRemovedFromHigherCapture() {
+        val showDisposed = mutableStateOf(true)
+        val showSurvivor = mutableStateOf(false)
+        val showUpper = mutableStateOf(false)
+        launchEmptyActivity().use { scenario ->
+            scenario.onActivity { activity ->
+                activity.setContent {
+                    Box(Modifier.fillMaxSize().background(Color.Blue))
+                    if (showDisposed.value) {
+                        Dialog(
+                            onDismissRequest = {},
+                            properties = DialogProperties(
+                                usePlatformDefaultWidth = false,
+                                decorFitsSystemWindows = false,
+                            ),
+                        ) {
+                            ConfigureTransparentDialogWindow()
+                            RegisterBackdropCaptureSource()
+                            Box(Modifier.fillMaxSize()) {
+                                EdgeMarker(
+                                    Modifier
+                                        .offset(x = 32.dp, y = 120.dp)
+                                        .size(160.dp),
+                                )
+                            }
+                        }
+                    }
+                    if (showSurvivor.value) {
+                        Dialog(
+                            onDismissRequest = {},
+                            properties = DialogProperties(
+                                usePlatformDefaultWidth = false,
+                                decorFitsSystemWindows = false,
+                            ),
+                        ) {
+                            ConfigureTransparentDialogWindow()
+                            RegisterBackdropCaptureSource()
+                            Box(Modifier.fillMaxSize()) {
+                                EdgeMarker(
+                                    Modifier
+                                        .offset(x = 32.dp, y = 320.dp)
+                                        .size(160.dp),
+                                )
+                                if (showUpper.value) {
+                                    Dialog(
+                                        onDismissRequest = {},
+                                        properties = DialogProperties(
+                                            usePlatformDefaultWidth = false,
+                                            decorFitsSystemWindows = false,
+                                        ),
+                                    ) {
+                                        ConfigureTransparentDialogWindow()
+                                        BlurOverlay(
+                                            state = rememberBlurOverlayState(
+                                                BlurOverlayConfig(radius = 12f, isLive = false),
+                                            ),
+                                            modifier = Modifier.fillMaxSize(),
+                                        ) {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            awaitScreenshot { centerEdgeContrast(it, yDp = 200) > 100 }.recycle()
+            composeRule.runOnIdle {
+                showDisposed.value = false
+                showSurvivor.value = true
+            }
+            awaitScreenshot {
+                centerEdgeContrast(it, yDp = 200) < 10 &&
+                    centerEdgeContrast(it, yDp = 400) > 100
+            }.recycle()
+            composeRule.runOnIdle { showUpper.value = true }
+            val captured = awaitScreenshot {
+                centerEdgeContrast(it, yDp = 200) < 10 && isSoftenedEdge(it, yDp = 400)
+            }
+            assertSoftenedEdge(captured, yDp = 400, context = "surviving registered layer")
+            captured.recycle()
+        }
+    }
+
+    @Test
+    fun registeredForeignDialogLayerIsCapturedByCustomDialogHost() {
+        val hostDialog = AtomicReference<android.app.Dialog>()
+        val hostComposed = AtomicBoolean()
+        val moveMarker = mutableStateOf(false)
+        launchEmptyActivity().use { scenario ->
+            try {
+                scenario.onActivity { activity ->
+                    activity.setContent {
+                        Box(Modifier.fillMaxSize().background(Color.Blue))
+                        Dialog(
+                            onDismissRequest = {},
+                            properties = DialogProperties(
+                                usePlatformDefaultWidth = false,
+                                decorFitsSystemWindows = false,
+                            ),
+                        ) {
+                            ConfigureTransparentDialogWindow()
+                            RegisterBackdropCaptureSource()
+                            Box(Modifier.fillMaxSize()) {
+                                EdgeMarker(
+                                    Modifier
+                                        .offset(
+                                            x = 32.dp,
+                                            y = if (moveMarker.value) 320.dp else 120.dp,
+                                        )
+                                        .size(160.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+
+                awaitScreenshot { centerEdgeContrast(it, yDp = 200) > 100 }.recycle()
+                scenario.onActivity { activity ->
+                    val composeView = ComposeView(activity).apply {
+                        setBackgroundColor(AndroidColor.TRANSPARENT)
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                        )
+                        if (activity is LifecycleOwner) {
+                            setViewTreeLifecycleOwner(activity)
+                            setViewTreeSavedStateRegistryOwner(
+                                activity as? SavedStateRegistryOwner,
+                            )
+                        }
+                        setContent {
+                            SideEffect { hostComposed.set(true) }
+                            BlurOverlay(
+                                state = rememberBlurOverlayState(
+                                    BlurOverlayConfig(radius = 12f, isLive = true),
+                                ),
+                                modifier = Modifier.fillMaxSize(),
+                            ) {}
+                        }
+                    }
+                    hostDialog.set(
+                        android.app.Dialog(
+                            activity,
+                            android.R.style.Theme_Translucent_NoTitleBar,
+                        ).apply {
+                            window?.setBackgroundDrawable(
+                                ColorDrawable(AndroidColor.TRANSPARENT),
+                            )
+                            window?.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                            window?.setLayout(
+                                WindowManager.LayoutParams.MATCH_PARENT,
+                                WindowManager.LayoutParams.MATCH_PARENT,
+                            )
+                            setContentView(composeView)
+                            show()
+                            window?.setLayout(
+                                WindowManager.LayoutParams.MATCH_PARENT,
+                                WindowManager.LayoutParams.MATCH_PARENT,
+                            )
+                            window?.let {
+                                androidx.core.view.WindowCompat.setDecorFitsSystemWindows(it, false)
+                            }
+                        },
+                    )
+                }
+
+                composeRule.waitUntil(timeoutMillis = 10_000) { hostComposed.get() }
+                assertSoftenedEdge(
+                    awaitScreenshot { isSoftenedEdge(it, yDp = 200) },
+                    yDp = 200,
+                    context = "registered foreign dialog marker captured by custom dialog host",
+                )
+                scenario.onActivity { moveMarker.value = true }
+                val updated = awaitScreenshot {
+                    centerEdgeContrast(it, yDp = 200) < 10 &&
+                        isSoftenedEdge(it, yDp = 400)
+                }
+                assertSoftenedEdge(
+                    updated,
+                    yDp = 400,
+                    context = "live registered marker captured by custom dialog host",
+                )
+                updated.recycle()
+            } finally {
+                scenario.onActivity { hostDialog.getAndSet(null)?.dismiss() }
+            }
         }
     }
 
@@ -3386,6 +3733,16 @@ private fun EdgeMarker(modifier: Modifier) {
             topLeft = androidx.compose.ui.geometry.Offset(x = size.width / 2f, y = 0f),
             size = size.copy(width = size.width / 2f),
         )
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun ConfigureTransparentDialogWindow() {
+    val view = LocalView.current
+    SideEffect {
+        val window = (view.parent as DialogWindowProvider).window
+        window.setBackgroundDrawable(ColorDrawable(AndroidColor.TRANSPARENT))
+        window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
     }
 }
 

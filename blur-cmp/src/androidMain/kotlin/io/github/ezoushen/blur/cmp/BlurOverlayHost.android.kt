@@ -27,6 +27,7 @@ import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.viewinterop.AndroidView
 import io.github.ezoushen.blur.BlurPipelineStrategy
 import io.github.ezoushen.blur.capture.BackdropCapturePrefix
@@ -65,9 +66,27 @@ actual fun BlurOverlayHost(
         }
     }
     val backdropStack = LocalAndroidBackdropStack.current
+    val currentView = LocalView.current
+    val activity = LocalContext.current.findActivity()
     val platformCaptureSources = LocalBlurOverlayPlatformContext.current.captureSources
     val injectedCaptureSources = remember(platformCaptureSources) {
         platformCaptureSources.map { BackdropCaptureSource(it.view, it.window) }
+    }
+    val registeredCapture = registeredBackdropCapture(
+        activity = activity,
+        currentView = currentView,
+    )
+    val automaticCaptureSources = remember(activity, registeredCapture?.sources) {
+        if (registeredCapture == null || activity == null) {
+            emptyList()
+        } else {
+            buildList {
+                add(BackdropCaptureSource(activity.window.decorView, activity.window))
+                registeredCapture.sources.forEach {
+                    add(BackdropCaptureSource(it.view, it.window))
+                }
+            }
+        }
     }
     val rememberedBackdropLayer = remember { AndroidBackdropLayer() }
     val backdropLayer = backdropStack?.currentLayer ?: rememberedBackdropLayer
@@ -80,7 +99,8 @@ actual fun BlurOverlayHost(
     val capturePrefix = backdropStack?.capturePrefix
     val lowerReadiness = backdropStack?.lowerReadiness
     val lowerLayersReady = lowerReadiness?.isReady ?: true
-    val explicitCaptureSources = injectedCaptureSources.takeIf { it.isNotEmpty() }
+    val explicitCaptureSources = (injectedCaptureSources.ifEmpty { automaticCaptureSources })
+        .takeIf { it.isNotEmpty() }
 
     Box(modifier = modifier) {
         background()

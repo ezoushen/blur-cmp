@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- feat: register custom dialog windows for automatic stacked backdrop capture
+
 ## [0.10.1] — 2026-08-01
 
 - fix: expose backdrop readiness on every platform
