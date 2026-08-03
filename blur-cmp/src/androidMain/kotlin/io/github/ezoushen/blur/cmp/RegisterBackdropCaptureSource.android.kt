@@ -5,9 +5,11 @@ import android.view.View
 import android.view.Window
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -20,7 +22,7 @@ import java.util.WeakHashMap
 private class RegisteredBackdropCaptureSource(
     val source: AndroidBlurOverlayCaptureSource,
     var capturePrefix: BackdropCapturePrefix,
-    val readiness: AndroidBackdropReadiness?,
+    val readiness: State<AndroidBackdropReadiness?>,
 )
 
 private class RegisteredBackdropCaptureGroup(activity: Activity) {
@@ -47,7 +49,7 @@ private object RegisteredBackdropCaptureSources {
     fun register(
         activity: Activity,
         source: AndroidBlurOverlayCaptureSource,
-        readiness: AndroidBackdropReadiness?,
+        readiness: State<AndroidBackdropReadiness?>,
     ): RegisteredBackdropCaptureSource {
         val group = groupsByActivity.getOrPut(activity) { RegisteredBackdropCaptureGroup(activity) }
         val registered = RegisteredBackdropCaptureSource(
@@ -136,10 +138,11 @@ internal fun RegisterBackdropCaptureSource(readiness: AndroidBackdropReadiness?)
     val view = LocalView.current
     val root = view.rootView
     val window = view.findDialogWindow() ?: return
+    val currentReadiness = rememberUpdatedState(readiness)
 
     DisposableEffect(activity, root, window) {
         val source = AndroidBlurOverlayCaptureSource(root, window)
-        val registered = RegisteredBackdropCaptureSources.register(activity, source, readiness)
+        val registered = RegisteredBackdropCaptureSources.register(activity, source, currentReadiness)
         onDispose {
             RegisteredBackdropCaptureSources.unregister(activity, registered)
         }
@@ -182,7 +185,7 @@ internal fun registeredBackdropCapture(
                 )
             }
         },
-        lowerReadiness = registered.lastOrNull { it.readiness != null }?.readiness,
+        lowerReadiness = registered.lastOrNull { it.readiness.value != null }?.readiness?.value,
     )
 }
 

@@ -1138,6 +1138,54 @@ class StackedBlurOverlayTest {
     }
 
     @Test
+    fun removingLowerRegisteredDialogRebuildsReadinessChain() {
+        val showLower = mutableStateOf(true)
+        val middleState = AtomicReference<BlurOverlayState>()
+        val upperState = AtomicReference<BlurOverlayState>()
+
+        launchEmptyActivity().use { scenario ->
+            scenario.onActivity { activity ->
+                activity.setContent {
+                    Box(Modifier.fillMaxSize().background(Color.Blue))
+                    if (showLower.value) {
+                        BackdropBlurDialog(onDismissRequest = {}) {
+                            BlurOverlay(
+                                state = rememberBlurOverlayState(
+                                    BlurOverlayConfig(radius = 12f, isLive = false),
+                                ),
+                                modifier = Modifier.fillMaxSize(),
+                            ) {}
+                        }
+                    }
+                    BackdropBlurDialog(onDismissRequest = {}) {
+                        val state = rememberBlurOverlayState(
+                            BlurOverlayConfig(radius = 12f, isLive = false),
+                        )
+                        SideEffect { middleState.set(state) }
+                        BlurOverlay(state = state, modifier = Modifier.fillMaxSize()) {}
+                    }
+                    BackdropBlurDialog(onDismissRequest = {}) {
+                        val state = rememberBlurOverlayState(
+                            BlurOverlayConfig(radius = 12f, isLive = false),
+                        )
+                        SideEffect { upperState.set(state) }
+                        BlurOverlay(state = state, modifier = Modifier.fillMaxSize()) {}
+                    }
+                }
+            }
+
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                middleState.get()?.isReady == true && upperState.get()?.isReady == true
+            }
+            scenario.onActivity { showLower.value = false }
+            composeRule.waitForIdle()
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                middleState.get()?.isReady == true && upperState.get()?.isReady == true
+            }
+        }
+    }
+
+    @Test
     fun registeredForeignDialogsAreCapturedInLayerOrder() {
         val showUpper = mutableStateOf(false)
         launchEmptyActivity().use { scenario ->

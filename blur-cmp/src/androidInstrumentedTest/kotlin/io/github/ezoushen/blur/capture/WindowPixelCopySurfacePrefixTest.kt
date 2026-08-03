@@ -34,6 +34,50 @@ import org.junit.runner.RunWith
 class WindowPixelCopySurfacePrefixTest {
 
     @Test
+    fun clearsSurfacePixelCopyDestinationBeforeCapture() {
+        onMain {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val layer = surfaceLayer(context)
+            val windowCopier = RecordingWindowPixelCopier()
+            val surfaceCopier = RecordingSurfacePixelCopier { destination ->
+                assertEquals(Color.TRANSPARENT, destination.getPixel(0, 0))
+            }
+            val batchScheduler = ManualPreparedPrefixBatchScheduler()
+            val coordinator = WindowPixelCopyCoordinator(
+                pixelCopier = windowCopier,
+                surfacePixelCopier = surfaceCopier,
+                bitmapFactory = { width, height ->
+                    Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply {
+                        eraseColor(Color.CYAN)
+                    }
+                },
+                preparedPrefixBatchPoster = batchScheduler::post,
+            )
+            val epoch = coordinator.beginEpoch()
+
+            try {
+                epoch.requestPrefix(
+                    BackdropCapturePrefix(
+                        parent = null,
+                        source = BackdropCaptureSource(
+                            layer.root,
+                            createWindow(context),
+                            coordinator,
+                        ),
+                    ),
+                    BackdropCaptureViewport(Rect(0, 0, 8, 8), 8, 8),
+                ) { _, frame -> frame?.close() }
+                batchScheduler.flush()
+                assertEquals(1, surfaceCopier.requests.size)
+            } finally {
+                epoch.close()
+                coordinator.close()
+                layer.close()
+            }
+        }
+    }
+
+    @Test
     fun stackedSurfacePrefixesSharePhysicalCaptureAndWaitForFirstSurfaceFrame() {
         onMain {
             val context = ApplicationProvider.getApplicationContext<Context>()
@@ -1098,7 +1142,10 @@ class WindowPixelCopySurfacePrefixTest {
 
     private class RecordingSurfacePixelCopier(
         private val pixels: IdentityHashMap<Surface, IntArray> = IdentityHashMap(),
+        private val onRequest: (Bitmap) -> Unit = {},
     ) : SurfacePixelCopier {
+        constructor(onRequest: (Bitmap) -> Unit) : this(IdentityHashMap(), onRequest)
+
         val requests = mutableListOf<Request>()
 
         override fun request(
@@ -1107,6 +1154,7 @@ class WindowPixelCopySurfacePrefixTest {
             onResult: (Int) -> Unit,
             handler: Handler,
         ) {
+            onRequest(destination)
             requests += Request(surface, destination, onResult)
         }
 
