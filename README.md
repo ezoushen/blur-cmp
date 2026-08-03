@@ -264,6 +264,25 @@ sibling or nested modal overlay owns a transparent edge-to-edge dialog and
 composites every lower window from the activity upward, including each lower
 layer's blur and sharp UI. Each layer keeps its own live/frozen update policy.
 
+Android callers that own their overlay windows can provide the ordered capture
+stack from an Android source set:
+
+```kotlin
+CompositionLocalProvider(
+    LocalBlurOverlayPlatformContext provides BlurOverlayPlatformContext(
+        captureSources = listOf(
+            AndroidBlurOverlayCaptureSource(activity.window.decorView, activity.window),
+            AndroidBlurOverlayCaptureSource(sheetView.rootView, sheetWindow),
+        ),
+    ),
+) {
+    BlurOverlay(state = blurState) { OverlayContent() }
+}
+```
+
+Sources are composited from back to front. Keep the list aligned with the
+currently mounted windows; an empty list falls back to the hosting activity.
+
 ### iOS
 
 Uses `CABackdropLayer` extracted from `UIVisualEffectView`:

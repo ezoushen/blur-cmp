@@ -57,11 +57,12 @@ composition of multiple app windows.
 ## Implemented result
 
 The Android host creates one transparent edge-to-edge dialog per visible
-backdrop layer. Each upper layer captures the composed root of the immediately
-lower dialog, including its TextureView blur output and sharp UI. Native window
-ordering keeps an on-top SurfaceView in a lower dialog behind every upper
-overlay without mutating the consumer's SurfaceView configuration. This does
-not use Android's built-in blur.
+backdrop layer. Each upper layer captures and composites every lower window in
+order, from the Activity through the preceding dialogs, including each lower
+dialog's TextureView blur output and sharp UI. Native window ordering keeps an
+on-top SurfaceView in a lower dialog behind every upper overlay without
+mutating the consumer's SurfaceView configuration. This does not use Android's
+built-in blur.
 
 Each layer's `isLive` and `requestUpdate()` state stays independent.
 
@@ -123,37 +124,27 @@ contract: ordinary Views, Compose, non-protected `TextureView`, and
 non-protected `SurfaceView` are supported, while secure/DRM surfaces are
 impossible to include by design.
 
-## Clean N-layer design without platform blur
+## N-layer design without platform blur
 
-Keep the custom capture plus Kawase/OpenGL pipeline, but make all logical
-overlays share one app-controlled physical window and one explicit composition
-tree:
+The implementation keeps one physical dialog per logical overlay. For each
+layer it builds an ordered source list containing the Activity window and every
+preceding overlay window, composites those buffers at the blur's requested
+bounds and resolution, then runs that layer's custom Kawase/OpenGL blur. This
+preserves native window ordering for `SurfaceView` content while allowing each
+layer to own its `isLive` and one-shot update policy.
 
-1. Build a full-bounds **base plane** representing the content below the first
-   logical overlay.
-2. Layer A captures and blurs the base plane, then draws A's scrim and UI.
-   The result is composite plane A.
-3. Layer B captures composite plane A, then draws B. Layer C captures composite
-   plane B, and so on.
-4. Each layer excludes only its own blur output/content while capturing its
-   immediately lower composite plane. This avoids recursion and naturally
-   supports arbitrary depth.
-5. Keep `isLive` and one-shot updates per layer. A live upper layer redraws from
-   the current lower composite; a frozen lower layer remains frozen according
-   to its own policy.
+Layers in the same stack share raw `Window` PixelCopy results and build one
+canonical cumulative prefix per source window. For N live layers this requires
+N physical window copies and N raw-plane additions per frame instead of
+N(N+1)/2. A consumer with different output dimensions receives one resize of
+the nearest cumulative prefix. Each layer still performs its own blur pass
+because its bounds, liveness, radius, scrim, and transition can differ. Capture
+and prefix bitmaps are reused across frames and are released with the stack.
 
-On Android, simultaneous sibling or nested logical overlays must not create
-separate `Dialog` windows.
-Either host the entire stack in the Activity window, or create one fullscreen
-dialog for the stack and render all N layers inside its root. If the one-dialog
-variant must cover transparent/partial regions, its base plane must explicitly
-contain the underlying Activity capture across the requested blur bounds;
-transparent dialog pixels cannot be used as an implicit input.
-
-This architecture preserves the device-independent custom Kawase result. The
-blur algorithm and the capture source remain separate concerns. It also has an
-unavoidable cost: with all N layers live, there can be up to N captures and N
-blur passes per frame, so performance must be verified at maximum supported
+This architecture preserves the device-independent custom blur result and does
+not depend on a hidden compositor capture API. With all N layers live, N blur
+passes remain unavoidable; capture and prefix composition scale linearly with
+stack depth, and performance must still be verified at the maximum supported
 depth and resolution.
 
 ## Recommended verification contract
@@ -265,10 +256,11 @@ draw nothing”—and the platform implementation
 ([`TextureView` API](https://developer.android.com/reference/android/view/TextureView),
 [AOSP `TextureView.draw`](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/view/TextureView.java#419)).
 
-The production capture path does not depend on this draw behavior:
-`DecorViewCapture` copies `TextureView` pixels through `getBitmap()` and
-composites them explicitly. This also lets the bitmap-backed portal pipeline
-capture them recursively.
+The primary stacked-window path does not depend on this draw behavior:
+`PixelCopy.request(Window, ...)` captures each window's `TextureView` pixels,
+so `DecorViewCapture` deliberately skips manual `TextureView` replay there.
+Only the software `View.draw(Canvas)` fallback uses `getBitmap()` and
+composites those pixels explicitly.
 
 ## Smallest screenshot assertion that covers stacked dialogs and textures
 
