@@ -324,6 +324,7 @@ private fun VariableBlurDemo(
     var gradientStyle by remember { mutableStateOf(GradientStyle.TopToBottom) }
     var spotlightRadius by remember { mutableStateOf(0.4f) }
     var isLive by remember { mutableStateOf(true) }
+    var showStackedOverlayReproduction by remember { mutableStateOf(false) }
 
     val gradient = when (gradientStyle) {
         GradientStyle.TopToBottom -> BlurGradientType.Linear(
@@ -377,6 +378,12 @@ private fun VariableBlurDemo(
                             isSelected = false,
                             onClick = { presentNativeChildScreen() },
                         )
+                        Spacer(Modifier.height(8.dp))
+                        Chip(
+                            label = "Reproduce Stacked Overlays",
+                            isSelected = false,
+                            onClick = { showStackedOverlayReproduction = true },
+                        )
                         if (supportsWindowMode) {
                             Spacer(Modifier.height(8.dp))
                             Chip(
@@ -413,6 +420,87 @@ private fun VariableBlurDemo(
                     }
                     ToggleRow("isLive", isLive) { isLive = it }
                     Spacer(Modifier.height(16.dp))
+                }
+            }
+        }
+
+        if (showStackedOverlayReproduction) {
+            Box(
+                modifier = Modifier.fillMaxSize().background(Color(0xFF1565C0)),
+                contentAlignment = Alignment.Center,
+            ) {
+                BasicText("ACTIVITY BASE — BLUE", style = textTitle)
+            }
+            StackedOverlayReproduction(
+                onClose = { showStackedOverlayReproduction = false },
+            )
+        }
+    }
+}
+
+@Composable
+private fun StackedOverlayReproduction(onClose: () -> Unit) {
+    var showOverlayB by remember { mutableStateOf(true) }
+    val overlayAState = rememberBlurOverlayState(
+        initialConfig = BlurOverlayConfig(radius = 18f, isLive = true),
+    )
+    val overlayBState = rememberBlurOverlayState(
+        initialConfig = BlurOverlayConfig(radius = 12f, isLive = true),
+    )
+
+    BlurOverlay(
+        state = overlayAState,
+        modifier = Modifier.fillMaxSize(),
+        onDismissRequest = onClose,
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Box(
+                modifier = Modifier.fillMaxWidth().background(Color(0xFFE53935)).padding(32.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                BasicText("OVERLAY A UI — MUST BLUR UNDER B", style = textTitle)
+            }
+            Spacer(Modifier.weight(1f))
+            Column(
+                modifier = Modifier.fillMaxWidth().background(Color(0xFFFFC107)).padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                BasicText("OVERLAY A CONTROLS", style = textWhiteBold)
+                Spacer(Modifier.height(8.dp))
+                Chip(
+                    label = "Present Overlay B",
+                    isSelected = false,
+                    onClick = { showOverlayB = true },
+                )
+                Spacer(Modifier.height(8.dp))
+                Chip(label = "Close Reproduction", isSelected = false, onClick = onClose)
+            }
+        }
+
+        if (showOverlayB) {
+            BlurOverlay(
+                state = overlayBState,
+                modifier = Modifier.fillMaxSize(),
+                onDismissRequest = { showOverlayB = false },
+            ) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(Color.Black.copy(alpha = 0.82f))
+                            .padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        BasicText("OVERLAY B — SHARP", style = textTitle)
+                        Spacer(Modifier.height(8.dp))
+                        BasicText("A's red and yellow UI should be blurred behind this.", style = textWhite)
+                        Spacer(Modifier.height(16.dp))
+                        Chip(
+                            label = "Dismiss Overlay B",
+                            isSelected = false,
+                            onClick = { showOverlayB = false },
+                        )
+                    }
                 }
             }
         }

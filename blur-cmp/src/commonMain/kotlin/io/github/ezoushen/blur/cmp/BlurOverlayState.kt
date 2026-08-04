@@ -20,6 +20,17 @@ class BlurOverlayState internal constructor(initialConfig: BlurOverlayConfig) {
     var alpha: Float by mutableStateOf(1f)
 
     /**
+     * Whether the platform renderer is ready for the overlay to be revealed.
+     *
+     * A visible blur becomes ready only after its backing layer or first frame exists. A disabled
+     * or no-frame-required configuration can be ready without producing a blur frame. Callers that
+     * own a separate overlay window can keep it transparent until this becomes true, avoiding an
+     * uninitialized surface flash without guessing a frame count.
+     */
+    var isReady: Boolean by mutableStateOf(false)
+        internal set
+
+    /**
      * Whether the overlay's hosting layer intercepts touches. Matters on iOS integrated mode,
      * where the overlay is a native full-screen container (backdrop + nested content VC) above
      * the app's Compose surface: while it exists, UIKit routes every touch to it, so content

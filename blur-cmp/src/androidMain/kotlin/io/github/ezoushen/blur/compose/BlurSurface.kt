@@ -23,7 +23,7 @@ import androidx.compose.ui.graphics.Color as ComposeColor
  * which only blur the view's own content, this actually captures and blurs
  * what's behind it in the view hierarchy.
  *
- * **Works on all supported API levels (23+).**
+ * **Works on all supported API levels (24+).**
  *
  * Usage:
  * ```kotlin
@@ -78,7 +78,7 @@ fun BlurSurface(
  * A composable that provides a blurred background effect with specified parameters.
  *
  * This composable uses the View-based [BlurView] internally via [AndroidView] to
- * provide true blur-behind functionality on all supported API levels (23+).
+ * provide true blur-behind functionality on all supported API levels (24+).
  *
  * @param modifier Modifier to be applied to the surface.
  * @param radius The blur radius in pixels.

@@ -43,7 +43,7 @@ import kotlin.math.ln
  * - Storing all pyramid levels (instead of reusing framebuffers)
  * - Additional composite pass
  *
- * Supported API: 23+ (minSdk)
+ * Supported API: 24+ (minSdk)
  */
 class VariableOpenGLBlur : BlurAlgorithm {
 
@@ -101,6 +101,7 @@ class VariableOpenGLBlur : BlurAlgorithm {
 
     // External OES texture for SurfaceTexture input (API 26+)
     private var externalInputTexture = 0
+    private var externalInputEnabled = false
 
     // Pyramid storage: each level stores the blur result at that iteration
     private var pyramidFramebuffers: IntArray? = null
@@ -183,9 +184,12 @@ class VariableOpenGLBlur : BlurAlgorithm {
                 }
             }
 
-            if (lastWidth != width || lastHeight != height) {
-                if (!makeCurrent()) return false
+            // Multiple stacked blur controllers share the UI thread but own
+            // separate EGL contexts. Re-bind ours before SurfaceTexture
+            // capture calls updateTexImage().
+            if (!makeCurrent()) return false
 
+            if (lastWidth != width || lastHeight != height) {
                 releaseFramebuffers()
                 if (!initFramebuffers(width, height)) return false
 
@@ -249,7 +253,10 @@ class VariableOpenGLBlur : BlurAlgorithm {
             val perf = BlurPerfMonitor.enabled
             val t0 = if (perf) System.nanoTime() else 0L
             val hasEglImageInput = inputTexture != 0 && currentEglImage != null
-            val hasExternalInput = externalInputTexture != 0 && downsampleExternalProgram != 0
+            val hasExternalInput =
+                externalInputEnabled &&
+                    externalInputTexture != 0 &&
+                    downsampleExternalProgram != 0
             if (hasEglImageInput) {
                 blitTexture(inputTexture, pyramidFramebuffers!![0], lastWidth, lastHeight)
             } else if (hasExternalInput) {
@@ -579,6 +586,10 @@ class VariableOpenGLBlur : BlurAlgorithm {
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
         return externalInputTexture
+    }
+
+    fun setExternalInputEnabled(enabled: Boolean) {
+        externalInputEnabled = enabled
     }
 
     private fun initEGL(): Boolean {
@@ -980,6 +991,7 @@ class VariableOpenGLBlur : BlurAlgorithm {
 
         outputBitmap?.recycle()
         outputBitmap = null
+        readPixelsBuffer = null
 
         lastWidth = 0
         lastHeight = 0

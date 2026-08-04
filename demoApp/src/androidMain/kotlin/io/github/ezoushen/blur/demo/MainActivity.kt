@@ -17,6 +17,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         demoActivityRef = WeakReference(this)
         enableEdgeToEdge()
+        if (intent.getBooleanExtra(EXTRA_EMPTY_CONTENT, false)) return
         setContent {
             Box(Modifier.fillMaxSize()) {
                 BlurCmpDemoApp()
@@ -29,5 +30,9 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    companion object {
+        const val EXTRA_EMPTY_CONTENT = "io.github.ezoushen.blur.demo.EMPTY_CONTENT"
     }
 }

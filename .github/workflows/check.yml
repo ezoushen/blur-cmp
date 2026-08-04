@@ -22,10 +22,13 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Compile blur-cmp (Android)
-        run: ./gradlew :blur-cmp:compileKotlinAndroid --no-configuration-cache
+        run: ./gradlew :blur-cmp:compileReleaseKotlinAndroid --no-configuration-cache
 
-      - name: Compile blur-cmp (iOS)
-        run: ./gradlew :blur-cmp:compileKotlinIosArm64 :blur-cmp:compileKotlinIosSimulatorArm64 --no-configuration-cache
+      - name: Test blur-cmp (Android)
+        run: ./gradlew :blur-cmp:testDebugUnitTest --no-configuration-cache
 
-      - name: Compile demo app (Android)
-        run: ./gradlew :demoApp:compileKotlinAndroid --no-configuration-cache
+      - name: Check blur-cmp (iOS)
+        run: ./gradlew :blur-cmp:compileKotlinIosArm64 :blur-cmp:iosSimulatorArm64Test --no-configuration-cache
+
+      - name: Compile demo and device tests (Android)
+        run: ./gradlew :blur-cmp:compileDebugAndroidTestKotlinAndroid :demoApp:compileDebugKotlinAndroid :demoApp:compileDebugAndroidTestKotlinAndroid --no-configuration-cache

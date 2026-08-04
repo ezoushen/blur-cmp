@@ -73,7 +73,7 @@ object BlurAlgorithmFactory {
      */
     fun getAvailableAlgorithms(): List<AlgorithmType> {
         return buildList {
-            add(AlgorithmType.OPENGL) // Default, always available (minSdk 23)
+            add(AlgorithmType.OPENGL) // Default, always available (minSdk 24)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 add(AlgorithmType.RENDER_EFFECT)
             }

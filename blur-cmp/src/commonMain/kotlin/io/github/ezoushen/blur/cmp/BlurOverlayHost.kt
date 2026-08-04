@@ -43,7 +43,9 @@ fun BlurOverlayHost(
  * blurs whatever happens to be behind it.
  *
  * Architecture per platform:
- * - **Android**: DecorView capture blurs everything drawn behind the BlurView's screen position.
+ * - **Android**: the custom Kawase pipeline captures everything drawn below the
+ *   BlurView in its source hierarchy. Each simultaneous sibling or nested
+ *   modal overlay composites every lower window from the Activity upward.
  * - **iOS**: CABackdropLayer captures live window content below it at the GPU compositor level.
  *
  * Usage:
@@ -76,11 +78,9 @@ internal val EmptyBackground: @Composable () -> Unit = {}
  * surface that gives the backdrop a stable region to blur (typically the
  * activity / view-controller's root). When [onDismissRequest] is non-null
  * the overlay is hosted in a [BackdropBlurDialog] automatically: on
- * Android that promotes it into a transparent edge-to-edge `Dialog`
- * Window — which is required for the backdrop blur to extend under status
- * + navigation bars and to avoid the cold-mount black frame produced by
- * adding a fresh overlay window underneath; on iOS the wrapper is a
- * passthrough because the native modal presentation chain already
+ * Android every overlay creates a transparent edge-to-edge `Dialog` and
+ * composites the Activity and all lower overlay windows. On iOS the wrapper
+ * is a passthrough because the native modal presentation chain already
  * supplies an equivalent surface.
  *
  * Pass [onDismissRequest] whenever the overlay represents a stand-alone

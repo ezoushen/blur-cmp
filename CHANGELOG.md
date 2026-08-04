@@ -1,5 +1,28 @@
 # Changelog
 
+## [Unreleased]
+
+## [0.10.2] — 2026-08-04
+
+- feat: register custom dialog windows for automatic stacked backdrop capture
+- fix(android): preserve readiness when lower registered dialogs are removed
+- fix(android): clear pooled PixelCopy destinations before capture
+
+## [0.10.1] — 2026-08-01
+
+- fix: expose backdrop readiness on every platform
+- fix(android): preserve capture sources for stacked overlay composition
+- fix(android): keep blur geometry stable while the radius animates
+
+## [0.10.0] — 2026-07-30
+
+- Raise Android minSdk to 24 so every supported device has reliable
+  `SurfaceView` capture through `PixelCopy`.
+- fix(android): compose sibling and nested blur overlays from every lower layer
+- fix(android): retain SurfaceView frames until asynchronous window capture completes
+- feat(android): register pre-36 SurfaceView compositor order for exact replay
+- test(android): cover independent bounds, three-layer composition, and per-layer liveness
+
 ## [0.9.3] — 2026-07-23
 
 - fix(ios): balance nested ComposeVC appearance transitions

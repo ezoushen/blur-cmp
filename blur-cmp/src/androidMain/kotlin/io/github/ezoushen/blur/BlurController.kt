@@ -3,17 +3,21 @@ package io.github.ezoushen.blur
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
 import android.os.Build
+import android.view.SurfaceView
 import android.view.View
+import android.view.Window
 import io.github.ezoushen.blur.algorithm.BlurAlgorithm
 import io.github.ezoushen.blur.algorithm.BlurAlgorithmFactory
 import io.github.ezoushen.blur.algorithm.OpenGLBlur
-import io.github.ezoushen.blur.capture.ContentCapture
+import io.github.ezoushen.blur.capture.BackdropCapturePrefix
+import io.github.ezoushen.blur.capture.BackdropCaptureSource
 import io.github.ezoushen.blur.capture.DecorViewCapture
+import io.github.ezoushen.blur.capture.SurfaceViewPresenceTracker
 import io.github.ezoushen.blur.capture.SurfaceTextureCapture
+import io.github.ezoushen.blur.capture.WindowCapturedBitmap
 import io.github.ezoushen.blur.cmp.TintOrder
 import io.github.ezoushen.blur.util.BitmapPool
 
@@ -60,14 +64,16 @@ class BlurController(
 
     private val bitmapPool = BitmapPool(maxPoolSize = 4)
     private val algorithm: BlurAlgorithm = BlurAlgorithmFactory.create(context)
-    private val capture: ContentCapture = DecorViewCapture()
+    private val capture = DecorViewCapture()
 
     // SurfaceTexture capture for zero-copy API 26-28 path
     private var surfaceTextureCapture: SurfaceTextureCapture? = null
     private var resolvedStrategy: BlurPipelineStrategy? = null
+    private val surfaceViewPresence = SurfaceViewPresenceTracker()
     private val pendingStExcludedViews = mutableListOf<View>()
 
     private var captureBitmap: Bitmap? = null
+    private var directCaptureFrame: WindowCapturedBitmap? = null
     private var blurredBitmap: Bitmap? = null
 
     private var blurView: View? = null
@@ -91,8 +97,12 @@ class BlurController(
      * @param sourceView The view to capture content from (usually DecorView)
      */
     fun init(blurView: View, sourceView: View) {
+        if (this.sourceView !== sourceView) {
+            releaseSurfaceTextureCapture()
+        }
         this.blurView = blurView
         this.sourceView = sourceView
+        syncSurfaceViewPresence()
         this.contentDirty = true
         this.isInitialized = true
     }
@@ -118,6 +128,7 @@ class BlurController(
                 configDirty = true
             }
             this.config = config
+            syncSurfaceViewPresence()
         }
     }
 
@@ -143,17 +154,31 @@ class BlurController(
     fun hasPendingDirty(): Boolean =
         configDirty || contentDirty
 
+    internal fun hasPendingWindowCopy(): Boolean =
+        capture.hasPendingWindowCopy()
+
+    private fun syncSurfaceViewPresence() {
+        val source = sourceView
+        if (config.pipelineStrategy == BlurPipelineStrategy.AUTO && source != null) {
+            surfaceViewPresence.setSource(source)
+        } else {
+            surfaceViewPresence.release()
+        }
+    }
+
     /**
      * Checks if the controller is currently capturing.
      *
      * Use this in the blur view's draw() method to prevent infinite recursion.
      */
     fun isCapturing(): Boolean {
-        return (capture as? DecorViewCapture)?.isCurrentlyCapturing() == true
+        return capture.isCurrentlyCapturing() ||
+            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                surfaceTextureCapture?.isCurrentlyCapturing() == true)
     }
 
     fun addExcludedView(view: View) {
-        (capture as? DecorViewCapture)?.addExcludedView(view)
+        capture.addExcludedView(view)
         val stCapture = surfaceTextureCapture
         if (stCapture != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             stCapture.addExcludedView(view)
@@ -163,11 +188,26 @@ class BlurController(
     }
 
     fun removeExcludedView(view: View) {
-        (capture as? DecorViewCapture)?.removeExcludedView(view)
+        capture.removeExcludedView(view)
         pendingStExcludedViews.remove(view)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             surfaceTextureCapture?.removeExcludedView(view)
         }
+    }
+
+    fun setSourceWindow(window: Window?) {
+        capture.setSourceWindow(window)
+        contentDirty = true
+    }
+
+    internal fun setCaptureSources(sources: List<BackdropCaptureSource>?) {
+        capture.setCaptureSources(sources)
+        contentDirty = true
+    }
+
+    internal fun setCapturePrefix(prefix: BackdropCapturePrefix?) {
+        capture.setCapturePrefix(prefix)
+        contentDirty = true
     }
 
     fun setOutputSurface(surface: android.view.Surface?, width: Int = 0, height: Int = 0) {
@@ -202,6 +242,11 @@ class BlurController(
      *   `supportsExternalInput()` returning false.
      */
     private fun resolveStrategy(): BlurPipelineStrategy {
+        if (config.pipelineStrategy == BlurPipelineStrategy.AUTO &&
+            surfaceViewPresence.containsSurfaceView()
+        ) {
+            return BlurPipelineStrategy.LEGACY
+        }
         resolvedStrategy?.let { return it }
 
         val requested = config.pipelineStrategy
@@ -241,9 +286,20 @@ class BlurController(
 
         // Check if dimensions changed — always requires full recapture
         val dimensionsChanged = view.width != lastWidth || view.height != lastHeight
-        if (dimensionsChanged) contentDirty = true
+        if (dimensionsChanged) {
+            contentDirty = true
+            if (lastWidth != 0 && lastHeight != 0) {
+                releaseSurfaceTextureCapture()
+                lastWidth = view.width
+                lastHeight = view.height
+            }
+        }
 
         if (!configDirty && !contentDirty) {
+            return false
+        }
+
+        if (contentDirty && hasPendingWindowCopy()) {
             return false
         }
 
@@ -284,7 +340,10 @@ class BlurController(
         val scaledHeight = (view.height / effectiveDownsample).toInt().coerceAtLeast(1)
 
         // Promote configDirty to contentDirty if scaled dimensions changed
-        if (captureBitmap != null && (captureBitmap?.width != scaledWidth || captureBitmap?.height != scaledHeight)) {
+        val cachedCapture = directCaptureFrame?.bitmap ?: captureBitmap
+        if (cachedCapture != null &&
+            (cachedCapture.width != scaledWidth || cachedCapture.height != scaledHeight)
+        ) {
             contentDirty = true
         }
 
@@ -297,6 +356,10 @@ class BlurController(
         }
 
         val strategy = resolveStrategy()
+        if (strategy != BlurPipelineStrategy.SURFACE_TEXTURE) {
+            releaseSurfaceTextureCapture()
+            (algorithm as? OpenGLBlur)?.setExternalInputEnabled(false)
+        }
 
         val t0 = if (BlurPerfMonitor.enabled) System.nanoTime() else 0L
         val success = if (contentDirty) {
@@ -306,7 +369,7 @@ class BlurController(
             }
         } else {
             // configDirty only: skip capture, re-blur cached bitmap
-            val cached = captureBitmap
+            val cached = directCaptureFrame?.bitmap ?: captureBitmap
             if (cached != null) {
                 blurredBitmap = algorithm.blur(cached, scaledRadius)
                 true
@@ -328,7 +391,7 @@ class BlurController(
         lastWidth = view.width
         lastHeight = view.height
         configDirty = false
-        contentDirty = false
+        contentDirty = capture.takeDeliveryNeedsRefresh()
 
         return true
     }
@@ -341,27 +404,55 @@ class BlurController(
         scaledWidth: Int, scaledHeight: Int,
         scaledRadius: Float, effectiveDownsample: Float
     ): Boolean {
-        // Get or create capture bitmap
-        if (captureBitmap == null ||
-            captureBitmap?.width != scaledWidth ||
-            captureBitmap?.height != scaledHeight
-        ) {
-            captureBitmap?.let { bitmapPool.release(it) }
-            captureBitmap = bitmapPool.acquire(scaledWidth, scaledHeight)
+        (algorithm as? OpenGLBlur)?.setExternalInputEnabled(false)
+
+        val useDirectFrame = !algorithm.canModifyBitmap() &&
+            (config.tintOrder != TintOrder.PRE_BLUR || config.tintColor == null)
+        val preparedPrefixResult = if (useDirectFrame) {
+            capture.capturePreparedPrefixForBlur(view, scaledWidth, scaledHeight)
+        } else {
+            null
         }
-
-        val captureOutput = captureBitmap ?: return false
-        captureOutput.eraseColor(Color.TRANSPARENT)
-
-        if (!capture.capture(view, source, captureOutput, effectiveDownsample)) {
+        var captureOutput: Bitmap? = null
+        val captured = preparedPrefixResult ?: run {
+            val output = obtainCaptureBitmap(scaledWidth, scaledHeight) ?: return false
+            captureOutput = output
+            if (useDirectFrame) {
+                capture.captureForBlur(view, source, output, effectiveDownsample)
+            } else {
+                capture.capture(view, source, output, effectiveDownsample)
+            }
+        }
+        if (!captured) {
             return false
+        }
+        var nextDirectFrame = if (useDirectFrame) capture.takeDirectWindowFrame() else null
+        var blurInput = nextDirectFrame?.bitmap ?: captureOutput ?: return false
+        if (blurInput.width != scaledWidth || blurInput.height != scaledHeight) {
+            val output = obtainCaptureBitmap(scaledWidth, scaledHeight)
+            if (output == null) {
+                nextDirectFrame?.close()
+                return false
+            }
+            output.eraseColor(android.graphics.Color.TRANSPARENT)
+            Canvas(output).drawBitmap(
+                blurInput,
+                null,
+                Rect(0, 0, scaledWidth, scaledHeight),
+                paint,
+            )
+            nextDirectFrame?.close()
+            nextDirectFrame = null
+            blurInput = output
         }
 
         if (config.tintOrder == TintOrder.PRE_BLUR) {
-            applyTint(captureOutput)
+            applyTint(blurInput)
         }
 
-        blurredBitmap = algorithm.blur(captureOutput, scaledRadius)
+        blurredBitmap = algorithm.blur(blurInput, scaledRadius)
+        directCaptureFrame?.close()
+        directCaptureFrame = nextDirectFrame
         return true
     }
 
@@ -401,16 +492,25 @@ class BlurController(
         // Note: excluded views are managed separately per capture instance
 
         if (!stCapture.capture(view, source, scaledWidth, scaledHeight)) {
+            if (stCapture.isFirstFramePending()) return false
             return updateLegacy(view, source, scaledWidth, scaledHeight, scaledRadius, effectiveDownsample)
         }
 
         // Blur with external OES input
-        val dummyBitmap = captureBitmap ?: run {
-            captureBitmap = bitmapPool.acquire(scaledWidth, scaledHeight)
-            captureBitmap ?: return false
-        }
+        glBlur.setExternalInputEnabled(true)
+        val dummyBitmap = obtainCaptureBitmap(scaledWidth, scaledHeight) ?: return false
         blurredBitmap = algorithm.blur(dummyBitmap, scaledRadius)
+        directCaptureFrame?.close()
+        directCaptureFrame = null
         return true
+    }
+
+    private fun obtainCaptureBitmap(width: Int, height: Int): Bitmap? {
+        if (captureBitmap?.width == width && captureBitmap?.height == height) {
+            return captureBitmap
+        }
+        captureBitmap?.let { bitmapPool.release(it) }
+        return bitmapPool.acquire(width, height).also { captureBitmap = it }
     }
 
     /**
@@ -448,6 +548,10 @@ class BlurController(
         canvas.drawRect(0f, 0f, view.width.toFloat(), view.height.toFloat(), tintPaint)
     }
 
+    fun drawPostBlurTint(canvas: Canvas) {
+        if (config.tintOrder == TintOrder.POST_BLUR) drawTint(canvas)
+    }
+
     /**
      * Draws the blurred content and optional post-blur tint to the canvas.
      *
@@ -463,9 +567,7 @@ class BlurController(
         dstRect.set(0, 0, view.width, view.height)
         canvas.drawBitmap(blurred, srcRect, dstRect, paint)
 
-        if (config.tintOrder == TintOrder.POST_BLUR) {
-            drawTint(canvas)
-        }
+        drawPostBlurTint(canvas)
     }
 
     /**
@@ -477,17 +579,17 @@ class BlurController(
         algorithm.release()
         capture.release()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            surfaceTextureCapture?.release()
-        }
+        releaseSurfaceTextureCapture()
         surfaceTextureCapture = null
         pendingStExcludedViews.clear()
         resolvedStrategy = null
-
+        surfaceViewPresence.release()
         captureBitmap?.let { bitmapPool.release(it) }
         captureBitmap = null
 
         blurredBitmap = null
+        directCaptureFrame?.close()
+        directCaptureFrame = null
 
         bitmapPool.clear()
 
@@ -499,6 +601,12 @@ class BlurController(
         configDirty = false
         contentDirty = true
         isInitialized = false
+    }
+
+    private fun releaseSurfaceTextureCapture() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            surfaceTextureCapture?.release()
+        }
     }
 
     /**

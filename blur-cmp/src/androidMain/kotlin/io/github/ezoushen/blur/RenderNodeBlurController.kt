@@ -88,6 +88,8 @@ class RenderNodeBlurController {
         isDirty = true
     }
 
+    fun hasPendingDirty(): Boolean = isDirty
+
     fun isCapturing(): Boolean = isCurrentlyCapturing
 
     fun addExcludedView(view: View) {

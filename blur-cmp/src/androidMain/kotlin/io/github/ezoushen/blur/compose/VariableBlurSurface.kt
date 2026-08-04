@@ -24,7 +24,7 @@ import androidx.compose.ui.graphics.Color as ComposeColor
  * **API Design:** Follows Jetpack Compose's [Brush] API conventions for gradients,
  * making it familiar for Compose developers.
  *
- * **Works on all supported API levels (23+).**
+ * **Works on all supported API levels (24+).**
  *
  * Usage:
  * ```kotlin

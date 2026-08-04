@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -65,8 +66,14 @@ actual fun BlurOverlayHost(
     content: @Composable () -> Unit,
 ) {
     val config = state.config
+    DisposableEffect(state) {
+        onDispose {
+            state.isReady = false
+        }
+    }
 
     if (!state.isEnabled) {
+        SideEffect { state.isReady = true }
         Box(modifier = modifier) {
             background()
             content()
@@ -108,6 +115,9 @@ private fun InjectedWindowBlurOverlay(
         onDispose {
             blurState.cleanupBackdrop()
         }
+    }
+    SideEffect {
+        state.isReady = blurState.hasBackdrop
     }
 
     LaunchedEffect(config) {
@@ -208,6 +218,9 @@ private fun IntegratedBlurOverlay(
             blurState.cleanupIntegrated()
         }
     }
+    SideEffect {
+        state.isReady = blurState.hasBackdrop
+    }
 
     LaunchedEffect(config) {
         blurState.applyConfig(config)
@@ -256,6 +269,9 @@ internal class IosBlurState {
     private var isBeforeBlurActive = false
 
     var containerViewController: UIViewController? = null
+
+    internal val hasBackdrop: Boolean
+        get() = backdropLayer != null
 
     fun applyAlpha(alpha: Float) {
         container?.setAlpha(alpha.toDouble())

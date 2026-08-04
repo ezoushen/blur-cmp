@@ -5,19 +5,23 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.graphics.Canvas
 import android.graphics.Color
-import android.os.Build
 import android.graphics.SurfaceTexture
+import android.os.Build
 import android.util.AttributeSet
 import android.util.TypedValue
 import android.view.Surface
 import android.view.TextureView
 import android.view.View
+import android.view.Window
 import android.view.ViewTreeObserver
 import android.widget.FrameLayout
 import androidx.annotation.ChecksSdkIntAtLeast
 import io.github.ezoushen.blur.BlurConfig
 import io.github.ezoushen.blur.BlurController
 import io.github.ezoushen.blur.RenderNodeBlurController
+import io.github.ezoushen.blur.capture.AndroidBlurFrameDispatcher
+import io.github.ezoushen.blur.capture.BackdropCapturePrefix
+import io.github.ezoushen.blur.capture.BackdropCaptureSource
 import io.github.ezoushen.blur.cmp.R
 import io.github.ezoushen.blur.capture.DecorViewCapture
 
@@ -66,6 +70,9 @@ class BlurView private constructor(
     private var isBlurEnabled: Boolean = true
     private var isLive: Boolean = true
     private var blurredView: View? = null
+    private var blurredWindow: Window? = null
+    private var blurredSources: List<BackdropCaptureSource>? = null
+    private var blurredPrefix: BackdropCapturePrefix? = null
 
     private var blurController: BlurController? = null
     private var renderNodeController: RenderNodeBlurController? = null
@@ -89,58 +96,117 @@ class BlurView private constructor(
     // For tracking rendering state to prevent infinite recursion
     private var isRendering = false
     private var hasFirstFrame = false
+    private var hasRenderedToOutputSurface = false
     private var blurTextureView: TextureView? = null
     private var blurSurface: Surface? = null
+    private var isAggregatedVisible = false
+    private var blurUpdatePosted = false
+    private var captureRequestVersion = 0L
 
     private val surfaceTextureListener = object : TextureView.SurfaceTextureListener {
         override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
             blurSurface?.release()
             blurSurface = Surface(st)
+            hasFirstFrame = false
+            hasRenderedToOutputSurface = false
+            blurTextureView?.alpha = 0f
+            frameLostListener?.invoke()
             blurController?.setOutputSurface(blurSurface, w, h)
         }
         override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
             blurSurface?.release()
             blurSurface = Surface(st)
+            hasFirstFrame = false
+            hasRenderedToOutputSurface = false
+            blurTextureView?.alpha = 0f
+            frameLostListener?.invoke()
             blurController?.setOutputSurface(blurSurface, w, h)
         }
         override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
             blurController?.setOutputSurface(null, 0, 0)
             blurSurface?.release()
             blurSurface = null
+            hasFirstFrame = false
+            hasRenderedToOutputSurface = false
+            blurTextureView?.alpha = 0f
+            frameLostListener?.invoke()
             return true
         }
-        override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+        override fun onSurfaceTextureUpdated(st: SurfaceTexture) {
+            if (hasRenderedToOutputSurface) onFirstFrameAvailable()
+        }
     }
 
-    private val preDrawListener = ViewTreeObserver.OnPreDrawListener {
-        if (isBlurEnabled) {
-            val needsFirstFrame = !hasFirstFrame
+    private val drawListener = ViewTreeObserver.OnDrawListener {
+        if (
+            isBlurEnabled &&
+            (canUseRenderNode() || blurController?.hasPendingWindowCopy() != true) &&
+            (
+                !hasFirstFrame ||
+                    if (canUseRenderNode()) {
+                        renderNodeController?.hasPendingDirty() == true
+                    } else {
+                        blurController?.hasPendingDirty() == true
+                    }
+            )
+        ) {
+            scheduleBlurUpdate()
+        }
+    }
+
+    private val blurUpdate = Runnable {
+        blurUpdatePosted = false
+        if (!isAttachedToWindow || !isBlurEnabled) return@Runnable
+
+        val updated = if (canUseRenderNode()) {
+            renderNodeController?.update() == true
+        } else {
+            blurController?.update() == true
+        }
+        if (updated) {
             if (canUseRenderNode()) {
-                val controller = renderNodeController
-                if (controller != null && (needsFirstFrame || (isLive && isShown))) {
-                    if (isLive) {
-                        controller.invalidate()
-                    }
-                    if (controller.update()) {
-                        onFirstFrameAvailable()
-                    }
-                }
+                onFirstFrameAvailable()
+            } else if (blurController?.hasOutputSurface() == true) {
+                hasRenderedToOutputSurface = true
             } else {
-                val controller = blurController
-                if (controller != null) {
-                    val hasPendingWork = controller.hasPendingDirty()
-                    if (needsFirstFrame || hasPendingWork || (isLive && isShown)) {
-                        if (isLive) {
-                            controller.markContentDirty()
-                        }
-                        if (controller.update()) {
-                            onFirstFrameAvailable()
-                        }
-                    }
-                }
+                onFirstFrameAvailable()
             }
         }
-        true
+        if (updated) invalidate()
+    }
+
+    private fun scheduleBlurUpdate() {
+        if (!blurUpdatePosted) {
+            blurUpdatePosted = true
+            post(blurUpdate)
+        }
+    }
+
+    private val liveFrameClient: () -> Boolean = {
+        if (!shouldUpdateLive()) {
+            false
+        } else if (!canUseRenderNode() && blurController?.hasPendingWindowCopy() == true) {
+            true
+        } else {
+            if (canUseRenderNode()) {
+                renderNodeController?.invalidate()
+            } else {
+                blurController?.markContentDirty()
+            }
+            invalidate()
+            true
+        }
+    }
+
+    private fun shouldUpdateLive(): Boolean =
+        isAttachedToWindow && isLive && isBlurEnabled && isAggregatedVisible
+
+    private fun updateLiveFrameRegistration() {
+        if (shouldUpdateLive()) {
+            AndroidBlurFrameDispatcher.register(liveFrameClient)
+        } else {
+            AndroidBlurFrameDispatcher.unregister(liveFrameClient)
+        }
     }
 
     init {
@@ -166,12 +232,10 @@ class BlurView private constructor(
                 // has rendered a frame to its `SurfaceTexture`. Before that
                 // first frame lands the underlying surface is opaque on
                 // some devices (Adreno / Mali), which reads as a black
-                // flash on cold mount of a backdrop blur. Visibility is
-                // flipped back to `VISIBLE` from [onFirstFrameAvailable]
-                // — `INVISIBLE` (not `GONE`) keeps the view in layout so
-                // its `SurfaceTexture` is still allocated when the view
-                // attaches to the window.
-                tv.visibility = INVISIBLE
+                // flash on cold mount of a backdrop blur. Keep the view
+                // visible with alpha zero so Android consumes the first
+                // surface frame and calls `onSurfaceTextureUpdated`.
+                tv.alpha = 0f
                 addView(tv, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
             }
         }
@@ -236,6 +300,7 @@ class BlurView private constructor(
      * @param config The blur configuration to apply.
      */
     fun setBlurConfig(config: BlurConfig) {
+        if (blurConfig == config) return
         blurConfig = config
         if (canUseRenderNode()) {
             renderNodeController?.setConfig(config)
@@ -306,6 +371,7 @@ class BlurView private constructor(
     fun setBlurEnabled(enabled: Boolean) {
         if (isBlurEnabled != enabled) {
             isBlurEnabled = enabled
+            updateLiveFrameRegistration()
             invalidate()
         }
     }
@@ -330,22 +396,28 @@ class BlurView private constructor(
     }
 
     private var firstFrameListener: OnFirstFrameListener? = null
+    private var frameLostListener: (() -> Unit)? = null
 
     fun setOnFirstFrameListener(listener: OnFirstFrameListener?) {
         firstFrameListener = listener
         if (hasFirstFrame) listener?.onFirstFrame()
     }
 
+    fun setOnFrameLostListener(listener: (() -> Unit)?) {
+        frameLostListener = listener
+    }
+
     fun hasFirstFrame(): Boolean = hasFirstFrame
 
     private fun onFirstFrameAvailable() {
-        if (hasFirstFrame) return
-        hasFirstFrame = true
-        // Reveal the GL output surface now that a frame is rendered to it
-        // (see the `INVISIBLE` initialiser on [blurTextureView]).
-        blurTextureView?.visibility = VISIBLE
+        if (!hasFirstFrame) {
+            hasFirstFrame = true
+            // Reveal the GL output surface now that Android has consumed its
+            // first frame (see the zero-alpha initialiser on [blurTextureView]).
+            blurTextureView?.alpha = 1f
+            firstFrameListener?.onFirstFrame()
+        }
         invalidate()
-        firstFrameListener?.onFirstFrame()
     }
 
     /**
@@ -367,7 +439,15 @@ class BlurView private constructor(
                 }
                 invalidate()
             }
+            updateLiveFrameRegistration()
         }
+    }
+
+    internal fun disableDirectSurfaceOutput() {
+        val textureView = blurTextureView ?: return
+        textureView.surfaceTextureListener = null
+        removeView(textureView)
+        blurTextureView = null
     }
 
     /**
@@ -384,6 +464,13 @@ class BlurView private constructor(
      * blur for the lifetime of the dialog.
      */
     fun requestSingleUpdate() {
+        captureRequestVersion++
+        requestCaptureDelivery()
+    }
+
+    internal fun captureRequestVersion(): Long = captureRequestVersion
+
+    internal fun requestCaptureDelivery() {
         blurController?.markContentDirty()
         if (canUseRenderNode()) {
             renderNodeController?.invalidate()
@@ -439,12 +526,56 @@ class BlurView private constructor(
      * @param view The view to use as the blur source.
      */
     fun setBlurredView(view: View) {
+        blurredPrefix = null
+        blurredSources = null
         blurredView = view
         if (canUseRenderNode()) {
             renderNodeController?.init(this, view)
         } else {
             blurController?.init(this, view)
+            blurController?.setCapturePrefix(null)
+            blurController?.setCaptureSources(null)
         }
+        invalidate()
+    }
+
+    internal fun setBlurredWindow(view: View, window: Window?) {
+        blurredWindow = window
+        setBlurredView(view)
+        blurController?.setSourceWindow(window)
+    }
+
+    internal fun setBlurredWindows(sources: List<BackdropCaptureSource>?) {
+        val updatedSources = sources?.takeIf { it.isNotEmpty() }
+        if (blurredPrefix == null && blurredSources == updatedSources) return
+        hasFirstFrame = false
+        hasRenderedToOutputSurface = false
+        blurTextureView?.alpha = 0f
+        frameLostListener?.invoke()
+        blurredPrefix = null
+        blurredSources = updatedSources
+        blurredWindow = null
+        val source = updatedSources?.last()?.view ?: decorView ?: getActivityDecorView()
+        blurredView = source
+        if (source != null) blurController?.init(this, source)
+        blurController?.setSourceWindow(null)
+        blurController?.setCaptureSources(updatedSources)
+        invalidate()
+    }
+
+    internal fun setBlurredPrefix(prefix: BackdropCapturePrefix?) {
+        if (blurredPrefix === prefix) return
+        hasFirstFrame = false
+        hasRenderedToOutputSurface = false
+        blurTextureView?.alpha = 0f
+        frameLostListener?.invoke()
+        blurredPrefix = prefix
+        blurredSources = null
+        blurredWindow = null
+        val source = prefix?.source?.view ?: decorView ?: getActivityDecorView()
+        blurredView = source
+        if (source != null) blurController?.init(this, source)
+        blurController?.setCapturePrefix(prefix)
         invalidate()
     }
 
@@ -453,12 +584,7 @@ class BlurView private constructor(
      * and real-time updates are disabled for performance reasons.
      */
     fun updateBlur() {
-        if (canUseRenderNode()) {
-            renderNodeController?.invalidate()
-        } else {
-            blurController?.invalidate()
-        }
-        invalidate()
+        requestSingleUpdate()
     }
 
     /**
@@ -489,26 +615,40 @@ class BlurView private constructor(
             } else {
                 blurController?.setConfig(blurConfig)
                 blurController?.init(this, source)
+                if (blurredPrefix != null) {
+                    blurController?.setCapturePrefix(blurredPrefix)
+                } else {
+                    blurController?.setCaptureSources(blurredSources)
+                    if (blurredSources == null) blurController?.setSourceWindow(blurredWindow)
+                }
                 flushPendingExcludedViews()
             }
 
-            // Drive blur updates from the BlurView's own VTO rather than the
-            // source view's. Backdrop blur is typically hosted in a separate
-            // Window (Dialog/Popup); the Activity decor's ViewTreeObserver
-            // does not dispatch preDraws when the Activity itself is
-            // quiescent, which left blur frozen after HOME→resume cycles
-            // (decor stays attached but emits no preDraws once Compose
-            // settles). The local VTO ticks whenever this BlurView's host
-            // window draws — which is every frame during animations and
-            // on-demand otherwise — and DecorViewCapture re-snapshots the
-            // source synchronously each tick, so live capture stays correct.
-            viewTreeObserver?.addOnPreDrawListener(preDrawListener)
+            // Capture after this window has drawn so Compose and View display
+            // lists contain the current frame. Capturing from pre-draw can
+            // consume stale dirty state before Compose records its updates.
+            viewTreeObserver?.addOnDrawListener(drawListener)
+            updateLiveFrameRegistration()
         }
     }
 
+    override fun onVisibilityAggregated(isVisible: Boolean) {
+        super.onVisibilityAggregated(isVisible)
+        if (canUseRenderNode() && renderNodeController?.isCapturing() == true) return
+        isAggregatedVisible = isVisible
+        updateLiveFrameRegistration()
+    }
+
     override fun onDetachedFromWindow() {
-        viewTreeObserver?.removeOnPreDrawListener(preDrawListener)
+        viewTreeObserver?.removeOnDrawListener(drawListener)
+        isAggregatedVisible = false
+        AndroidBlurFrameDispatcher.unregister(liveFrameClient)
+        removeCallbacks(blurUpdate)
+        blurUpdatePosted = false
         hasFirstFrame = false
+        hasRenderedToOutputSurface = false
+        blurTextureView?.alpha = 0f
+        frameLostListener?.invoke()
 
         blurController?.setOutputSurface(null)
         blurSurface?.release()
@@ -567,6 +707,17 @@ class BlurView private constructor(
             }
         }
         super.onDraw(canvas)
+    }
+
+    override fun dispatchDraw(canvas: Canvas) {
+        super.dispatchDraw(canvas)
+        if (blurController?.hasOutputSurface() == true) {
+            drawPostBlurTint(canvas)
+        }
+    }
+
+    internal fun drawPostBlurTint(canvas: Canvas) {
+        blurController?.drawPostBlurTint(canvas)
     }
 
     /**
