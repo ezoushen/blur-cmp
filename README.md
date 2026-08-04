@@ -264,8 +264,9 @@ sibling or nested modal overlay owns a transparent edge-to-edge dialog and
 composites every lower window from the activity upward, including each lower
 layer's blur and sharp UI. Each layer keeps its own live/frozen update policy.
 
-Android callers that own their overlay windows can provide the ordered capture
-stack automatically by registering each custom dialog or sheet from common code:
+`BlurOverlay` and `BackdropBlurDialog` register their hosting windows automatically.
+Call `RegisterBackdropCaptureSource` only for a source-only custom dialog or sheet
+that must appear in blur overlays above it but does not contain its own `BlurOverlay`:
 
 ```kotlin
 Dialog(onDismissRequest = onDismissRequest) {
@@ -274,8 +275,8 @@ Dialog(onDismissRequest = onDismissRequest) {
 }
 ```
 
-`BackdropBlurDialog` already registers its window. Manual source injection remains
-available from an Android source set for hosts that cannot register from Compose:
+Manual source injection remains available from an Android source set for hosts that
+cannot register from Compose:
 
 ```kotlin
 CompositionLocalProvider(

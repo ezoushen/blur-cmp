@@ -29,6 +29,7 @@ import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.doOnPreDraw
 import io.github.ezoushen.blur.BlurPipelineStrategy
 import io.github.ezoushen.blur.capture.BackdropCapturePrefix
 import io.github.ezoushen.blur.capture.BackdropCaptureSource
@@ -68,13 +69,16 @@ actual fun BlurOverlayHost(
     val backdropStack = LocalAndroidBackdropStack.current
     val currentView = LocalView.current
     val activity = LocalContext.current.findActivity()
-    val platformCaptureSources = LocalBlurOverlayPlatformContext.current.captureSources
+    val platformContext = LocalBlurOverlayPlatformContext.current
+    val platformCaptureSources = platformContext.captureSources
+    val currentWindow = currentView.findDialogWindow() ?: platformContext.contentWindow
     val injectedCaptureSources = remember(platformCaptureSources) {
         platformCaptureSources.map { BackdropCaptureSource(it.view, it.window) }
     }
     val registeredCapture = registeredBackdropCapture(
         activity = activity,
         currentView = currentView,
+        currentWindow = currentWindow,
     )
     val automaticCaptureSources = registeredCapture?.sources.orEmpty()
     val rememberedBackdropLayer = remember { AndroidBackdropLayer() }
@@ -88,6 +92,26 @@ actual fun BlurOverlayHost(
     val stackedCapturePrefix = backdropStack?.capturePrefix
     val lowerReadiness = backdropStack?.lowerReadiness ?: registeredCapture?.lowerReadiness
     val lowerLayersReady = lowerReadiness?.isReady ?: true
+    if (backdropStack == null && currentWindow != null && currentWindow !== activity?.window) {
+        DisposableEffect(currentView.rootView, backdropLayer) {
+            backdropLayer.contentReady = false
+            val firstDraw = currentView.rootView.doOnPreDraw {
+                backdropLayer.contentReady = true
+            }
+            onDispose {
+                firstDraw.removeListener()
+                backdropLayer.contentReady = false
+            }
+        }
+        val readiness = remember(lowerReadiness, backdropLayer) {
+            AndroidBackdropReadiness(lowerReadiness, backdropLayer)
+        }
+        RegisterBackdropCaptureSource(
+            readiness = readiness,
+            root = currentView.rootView,
+            window = currentWindow,
+        )
+    }
     val explicitCaptureSources = injectedCaptureSources
         .ifEmpty {
             automaticCaptureSources.takeIf { stackedCapturePrefix == null }.orEmpty()

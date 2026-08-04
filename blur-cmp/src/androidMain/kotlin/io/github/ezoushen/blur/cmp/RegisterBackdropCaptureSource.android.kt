@@ -22,6 +22,16 @@ import java.util.WeakHashMap
 private class RegisteredBackdropCaptureSource(
     val source: AndroidBlurOverlayCaptureSource,
     var capturePrefix: BackdropCapturePrefix,
+    readiness: State<AndroidBackdropReadiness?>,
+) {
+    val readinessOwners = mutableListOf(readiness)
+
+    val readiness: AndroidBackdropReadiness?
+        get() = readinessOwners.asReversed().firstNotNullOfOrNull { it.value }
+}
+
+private class RegisteredBackdropCaptureLease(
+    val source: RegisteredBackdropCaptureSource,
     val readiness: State<AndroidBackdropReadiness?>,
 )
 
@@ -50,8 +60,15 @@ private object RegisteredBackdropCaptureSources {
         activity: Activity,
         source: AndroidBlurOverlayCaptureSource,
         readiness: State<AndroidBackdropReadiness?>,
-    ): RegisteredBackdropCaptureSource {
+    ): RegisteredBackdropCaptureLease {
         val group = groupsByActivity.getOrPut(activity) { RegisteredBackdropCaptureGroup(activity) }
+        group.sources.firstOrNull {
+            it.source.view === source.view && it.source.window === source.window
+        }?.let { registered ->
+            registered.readinessOwners += readiness
+            version++
+            return RegisteredBackdropCaptureLease(registered, readiness)
+        }
         val registered = RegisteredBackdropCaptureSource(
             source = source,
             capturePrefix = BackdropCapturePrefix(
@@ -66,11 +83,19 @@ private object RegisteredBackdropCaptureSources {
         )
         group.sources.add(registered)
         version++
-        return registered
+        return RegisteredBackdropCaptureLease(registered, readiness)
     }
 
-    fun unregister(activity: Activity, source: RegisteredBackdropCaptureSource) {
+    fun unregister(activity: Activity, lease: RegisteredBackdropCaptureLease) {
         val group = groupsByActivity[activity] ?: return
+        val source = lease.source
+        val ownerIndex = source.readinessOwners.indexOfFirst { it === lease.readiness }
+        if (ownerIndex < 0) return
+        source.readinessOwners.removeAt(ownerIndex)
+        if (source.readinessOwners.isNotEmpty()) {
+            version++
+            return
+        }
         val removedIndex = group.sources.indexOf(source)
         if (removedIndex < 0) return
         group.sources.removeAt(removedIndex)
@@ -134,10 +159,19 @@ actual fun RegisterBackdropCaptureSource() {
 
 @Composable
 internal fun RegisterBackdropCaptureSource(readiness: AndroidBackdropReadiness?) {
-    val activity = LocalContext.current.findActivity() ?: return
     val view = LocalView.current
     val root = view.rootView
     val window = view.findDialogWindow() ?: return
+    RegisterBackdropCaptureSource(readiness, root, window)
+}
+
+@Composable
+internal fun RegisterBackdropCaptureSource(
+    readiness: AndroidBackdropReadiness?,
+    root: View,
+    window: Window,
+) {
+    val activity = LocalContext.current.findActivity() ?: return
     val currentReadiness = rememberUpdatedState(readiness)
 
     DisposableEffect(activity, root, window) {
@@ -158,9 +192,9 @@ internal data class RegisteredBackdropCapture(
 internal fun registeredBackdropCapture(
     activity: Activity?,
     currentView: View,
+    currentWindow: Window? = currentView.findDialogWindow(),
 ): RegisteredBackdropCapture? {
     activity ?: return null
-    val currentWindow = currentView.findDialogWindow()
     if (currentWindow == null && currentView.rootView === activity.window.decorView) return null
     val registered = RegisteredBackdropCaptureSources.below(activity, currentWindow)
     val top = registered.lastOrNull() ?: return null
@@ -185,7 +219,7 @@ internal fun registeredBackdropCapture(
                 )
             }
         },
-        lowerReadiness = registered.lastOrNull { it.readiness.value != null }?.readiness?.value,
+        lowerReadiness = registered.lastOrNull { it.readiness != null }?.readiness,
     )
 }
 

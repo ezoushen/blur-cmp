@@ -1368,6 +1368,7 @@ class StackedBlurOverlayTest {
         val hostComposed = AtomicBoolean()
         val hostState = AtomicReference<BlurOverlayState>()
         val moveMarker = mutableStateOf(false)
+        val showUpper = mutableStateOf(false)
         launchEmptyActivity().use { scenario ->
             try {
                 scenario.onActivity { activity ->
@@ -1393,11 +1394,33 @@ class StackedBlurOverlayTest {
                                 )
                             }
                         }
+                        if (showUpper.value) {
+                            Dialog(
+                                onDismissRequest = {},
+                                properties = DialogProperties(
+                                    usePlatformDefaultWidth = false,
+                                    decorFitsSystemWindows = false,
+                                ),
+                            ) {
+                                ConfigureTransparentDialogWindow()
+                                BlurOverlay(
+                                    state = rememberBlurOverlayState(
+                                        BlurOverlayConfig(radius = 12f, isLive = false),
+                                    ),
+                                    modifier = Modifier.fillMaxSize(),
+                                ) {}
+                            }
+                        }
                     }
                 }
 
                 awaitScreenshot { centerEdgeContrast(it, yDp = 200) > 100 }.recycle()
                 scenario.onActivity { activity ->
+                    val dialog = android.app.Dialog(
+                        activity,
+                        android.R.style.Theme_Translucent_NoTitleBar,
+                    )
+                    val contentWindow = requireNotNull(dialog.window)
                     val composeView = ComposeView(activity).apply {
                         setBackgroundColor(AndroidColor.TRANSPARENT)
                         layoutParams = ViewGroup.LayoutParams(
@@ -1411,22 +1434,30 @@ class StackedBlurOverlayTest {
                             )
                         }
                         setContent {
-                            val state = rememberBlurOverlayState(
-                                BlurOverlayConfig(radius = 12f, isLive = false),
-                            )
-                            SideEffect { hostComposed.set(true) }
-                            BlurOverlay(
-                                state = state,
-                                modifier = Modifier.fillMaxSize(),
-                            ) {}
-                            SideEffect { hostState.set(state) }
+                            CompositionLocalProvider(
+                                LocalBlurOverlayPlatformContext provides
+                                    BlurOverlayPlatformContext(contentWindow = contentWindow),
+                            ) {
+                                val state = rememberBlurOverlayState(
+                                    BlurOverlayConfig(radius = 12f, isLive = false),
+                                )
+                                SideEffect { hostComposed.set(true) }
+                                BlurOverlay(
+                                    state = state,
+                                    modifier = Modifier.fillMaxSize(),
+                                ) {
+                                    EdgeMarker(
+                                        Modifier
+                                            .offset(x = 32.dp, y = 520.dp)
+                                            .size(160.dp),
+                                    )
+                                }
+                                SideEffect { hostState.set(state) }
+                            }
                         }
                     }
                     hostDialog.set(
-                        android.app.Dialog(
-                            activity,
-                            android.R.style.Theme_Translucent_NoTitleBar,
-                        ).apply {
+                        dialog.apply {
                             window?.setBackgroundDrawable(
                                 ColorDrawable(AndroidColor.TRANSPARENT),
                             )
@@ -1466,6 +1497,16 @@ class StackedBlurOverlayTest {
                     context = "live registered marker captured by custom dialog host",
                 )
                 updated.recycle()
+                scenario.onActivity { showUpper.value = true }
+                val stacked = awaitScreenshot {
+                    isSoftenedEdge(it, yDp = 400) && isSoftenedEdge(it, yDp = 600)
+                }
+                assertSoftenedEdge(
+                    stacked,
+                    yDp = 600,
+                    context = "automatically registered custom dialog marker",
+                )
+                stacked.recycle()
             } finally {
                 scenario.onActivity { hostDialog.getAndSet(null)?.dismiss() }
             }
