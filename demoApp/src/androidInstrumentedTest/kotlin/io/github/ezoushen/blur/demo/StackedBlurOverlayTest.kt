@@ -1366,6 +1366,7 @@ class StackedBlurOverlayTest {
     fun registeredForeignDialogLayerIsCapturedByCustomDialogHost() {
         val hostDialog = AtomicReference<android.app.Dialog>()
         val hostComposed = AtomicBoolean()
+        val hostState = AtomicReference<BlurOverlayState>()
         val moveMarker = mutableStateOf(false)
         launchEmptyActivity().use { scenario ->
             try {
@@ -1410,13 +1411,15 @@ class StackedBlurOverlayTest {
                             )
                         }
                         setContent {
+                            val state = rememberBlurOverlayState(
+                                BlurOverlayConfig(radius = 12f, isLive = false),
+                            )
                             SideEffect { hostComposed.set(true) }
                             BlurOverlay(
-                                state = rememberBlurOverlayState(
-                                    BlurOverlayConfig(radius = 12f, isLive = true),
-                                ),
+                                state = state,
                                 modifier = Modifier.fillMaxSize(),
                             ) {}
+                            SideEffect { hostState.set(state) }
                         }
                     }
                     hostDialog.set(
@@ -1452,6 +1455,7 @@ class StackedBlurOverlayTest {
                     context = "registered foreign dialog marker captured by custom dialog host",
                 )
                 scenario.onActivity { moveMarker.value = true }
+                composeRule.runOnIdle { requireNotNull(hostState.get()).requestUpdate() }
                 val updated = awaitScreenshot {
                     centerEdgeContrast(it, yDp = 200) < 10 &&
                         isSoftenedEdge(it, yDp = 400)
